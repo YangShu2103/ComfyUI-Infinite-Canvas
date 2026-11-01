@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 前端依赖与本地调试产物（dist 需要提交，供普通用户直接使用）
+frontend/node_modules/
+frontend/.vite/
+
+# 本地数据（正常情况下存在 ComfyUI 用户目录，这里只是兜底）
+user/
+thumbs/
+canvas_settings.json
+prompts.json
+
+.DS_Store
