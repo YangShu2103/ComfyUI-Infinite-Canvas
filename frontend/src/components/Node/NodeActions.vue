@@ -5,9 +5,11 @@
       v-for="(action, i) in actions"
       :key="action.key"
       class="fan-btn"
+      :class="{ 'is-enabled': !isDisabled(action) }"
       :style="fanStyle(i)"
       type="button"
       :title="action.label"
+      :disabled="isDisabled(action)"
       @pointerdown.stop
       @mousedown.stop
       @click.stop="trigger(action)"
@@ -59,7 +61,7 @@
                 :class="{ 'is-active': mode === modeOf(action) }"
                 type="button"
                 :title="action.label"
-                :disabled="toolDisabled(action)"
+                :disabled="isDisabled(action)"
                 @click="trigger(action)"
               >
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
@@ -101,6 +103,27 @@
               <span v-if="mode === 'preview'" class="side-hint">
                 滚轮缩放 50%–800%，放大后可拖动查看
               </span>
+
+              <!-- 对比：自身与上游第一条素材类型一致时显示 -->
+              <button
+                v-if="mode === 'preview' && canCompare"
+                class="side-compare"
+                :class="{ 'is-active': comparing }"
+                type="button"
+                @click="toggleCompare"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path
+                    d="M12 3v18M7 8l-4 4 4 4M17 8l4 4-4 4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <span>{{ comparing ? "退出对比" : "对比" }}</span>
+              </button>
             </div>
 
             <!-- 应用按钮同样由编辑器 Teleport 进来，沉底 -->
@@ -118,6 +141,8 @@
                 :item="current"
                 :media="media"
                 :index="index"
+                :upstream="upstreamFirst"
+                :comparing="comparing"
                 @select="emit('select', $event)"
               />
 
@@ -164,7 +189,7 @@
 </template>
 
 <script setup>
-import { computed, inject, nextTick, ref } from "vue";
+import { computed, inject, nextTick, ref, watch } from "vue";
 import PreviewPane from "./editors/PreviewPane.vue";
 import CropEditor from "./editors/CropEditor.vue";
 import ExpandEditor from "./editors/ExpandEditor.vue";
@@ -175,6 +200,8 @@ const props = defineProps({
   visible: { type: Boolean, default: false },
   nodeId: { type: String, default: "" },
   media: { type: Array, default: () => [] },
+  // 上游节点传入该节点的素材（用于对比）
+  inputMedia: { type: Array, default: () => [] },
   index: { type: Number, default: 0 },
   label: { type: String, default: "" },
 });
@@ -193,6 +220,31 @@ const mode = ref("preview");
 const gridMode = ref("split");
 const current = computed(() => props.media[props.index] || null);
 const isImage = computed(() => !!current.value && current.value.kind === "image");
+
+// 对比：自身与上游都有素材，第一条类型一致（只支持图片/视频），
+// 且当前预览的必须是第一个素材
+const comparing = ref(false);
+const upstreamFirst = computed(() => props.inputMedia[0] || null);
+const canCompare = computed(() => {
+  const own = props.media[0];
+  const up = upstreamFirst.value;
+  if (!own || !up) return false;
+  if (own.kind !== up.kind) return false;
+  if (own.kind !== "image" && own.kind !== "video") return false;
+  return props.index === 0;
+});
+
+watch(
+  () => [canCompare.value, props.index, props.media.length, props.inputMedia.length],
+  () => {
+    if (!canCompare.value) comparing.value = false;
+  }
+);
+
+function toggleCompare() {
+  if (!canCompare.value) return;
+  comparing.value = !comparing.value;
+}
 
 const zipRefs = computed(() =>
   props.media
@@ -270,13 +322,18 @@ function modeOf(action) {
   return action.mode || "";
 }
 
-function toolDisabled(action) {
-  if (action.key === "downloadAll") return !zipRefs.value.length;
+// 按钮可用规则：
+// - 批量下载：节点自身至少两个文件才可用
+// - 裁切 / 扩图 / 宫格：只对图片可用（音频、视频禁用）
+// - 下载：当前有素材即可用
+function isDisabled(action) {
+  if (action.key === "downloadAll") return props.media.length < 2;
   if (action.key === "download") return !current.value;
   return !!action.imageOnly && !isImage.value;
 }
 
 function trigger(action) {
+  if (isDisabled(action)) return;
   if (action.key === "download") {
     downloadCurrent();
     return;
@@ -308,8 +365,22 @@ function setGridMode(next) {
 function closePanel() {
   panelOpen.value = false;
   showContent.value = false;
+  comparing.value = false;
   mode.value = "preview";
 }
+
+// 双击节点素材时由父组件调用：直接打开预览面板
+function openPreviewPanel() {
+  panelOpen.value = true;
+  showContent.value = false;
+  comparing.value = false;
+  mode.value = "preview";
+  nextTick(() => {
+    showContent.value = true;
+  });
+}
+
+defineExpose({ openPreviewPanel });
 
 function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -429,6 +500,30 @@ async function onMerge(blob, filename) {
   border-color: var(--accent-yellow);
   background: #33333d;
   color: var(--accent-yellow);
+}
+
+/* 可用按钮高亮：黄色描边 + 淡黄底；不可用按钮降透明度并禁用指针 */
+.fan-btn.is-enabled {
+  border-color: rgba(242, 255, 89, 0.75);
+  color: var(--accent-yellow);
+  background: rgba(242, 255, 89, 0.1);
+}
+
+.fan-btn.is-enabled:hover {
+  border-color: var(--accent-yellow);
+  background: rgba(242, 255, 89, 0.2);
+}
+
+.fan-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.fan-btn:disabled:hover {
+  border-color: #4a4a58;
+  background: rgba(38, 38, 46, 0.94);
+  color: var(--c-text);
 }
 
 /* 弹层 */
@@ -605,6 +700,29 @@ async function onMerge(blob, filename) {
   color: var(--c-muted);
   font-size: 11px;
   line-height: 1.7;
+}
+
+/* 对比开关：放在预览提示下方 */
+.side-compare {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 34px;
+  margin-top: 10px;
+  border: 1px solid rgba(242, 255, 89, 0.6);
+  border-radius: 8px;
+  background: rgba(242, 255, 89, 0.08);
+  color: var(--accent-yellow);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.side-compare:hover,
+.side-compare.is-active {
+  border-color: var(--accent-yellow);
+  background: rgba(242, 255, 89, 0.2);
 }
 
 /* 应用按钮容器：编辑器 Teleport 进来，沉底 */

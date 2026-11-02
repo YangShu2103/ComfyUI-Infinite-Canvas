@@ -2,31 +2,43 @@
   <div
     ref="stageEl"
     class="preview-stage"
-    :class="{ 'is-zoomed': isImage && zoom > 1, 'is-pannable': isImage && zoom > 1 }"
+    :class="{
+      'is-zoomed': isImage && zoom > 1,
+      'is-pannable': isImage && zoom > 1,
+      'has-strip': showStrip && isVideo,
+    }"
     @wheel.prevent="onWheel"
     @pointerdown="onPointerDown"
   >
-    <video
-      v-if="item && item.kind === 'video'"
-      :src="item.url"
-      controls
-      playsinline
-      preload="metadata"
+    <CompareView
+      v-if="comparing && upstream && item"
+      :kind="item.kind"
+      :before="upstream"
+      :after="item"
     />
-    <audio v-else-if="item && item.kind === 'audio'" :src="item.url" controls />
-    <img
-      v-else-if="item"
-      :src="item.url"
-      :alt="item.name"
-      draggable="false"
-      :style="imageStyle"
-    />
-    <span v-else class="preview-empty">暂无素材</span>
+    <template v-else>
+      <video
+        v-if="item && item.kind === 'video'"
+        :src="item.url"
+        controls
+        playsinline
+        preload="metadata"
+      />
+      <audio v-else-if="item && item.kind === 'audio'" :src="item.url" controls />
+      <img
+        v-else-if="item"
+        :src="item.url"
+        :alt="item.name"
+        draggable="false"
+        :style="imageStyle"
+      />
+      <span v-else class="preview-empty">暂无素材</span>
+    </template>
 
-    <div v-if="isImage" class="preview-zoom">{{ Math.round(zoom * 100) }}%</div>
+    <div v-if="isImage && !comparing" class="preview-zoom">{{ Math.round(zoom * 100) }}%</div>
 
     <!-- 素材缩略条：悬浮在预览区底部 -->
-    <div v-if="thumbs.length" class="preview-strip" @wheel.stop @pointerdown.stop>
+    <div v-if="showStrip" class="preview-strip" @wheel.stop @pointerdown.stop>
       <button
         v-for="(thumb, i) in thumbs"
         :key="thumb.id || i"
@@ -37,7 +49,16 @@
         @click.stop="emit('select', i)"
       >
         <img v-if="thumb.kind === 'image'" :src="thumb.url" alt="" draggable="false" />
-        <span v-else class="thumb-kind">{{ thumb.kind === "video" ? "视频" : "音频" }}</span>
+        <video
+          v-else-if="thumb.kind === 'video'"
+          class="thumb-video"
+          :src="thumb.url"
+          muted
+          playsinline
+          preload="metadata"
+        />
+        <span v-else class="thumb-kind">音频</span>
+        <span v-if="thumb.kind === 'video'" class="thumb-badge">▶</span>
       </button>
     </div>
   </div>
@@ -46,11 +67,15 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import { clamp } from "../../../utils/image";
+import CompareView from "./CompareView.vue";
 
 const props = defineProps({
   item: { type: Object, default: null },
   media: { type: Array, default: () => [] },
   index: { type: Number, default: 0 },
+  // 对比模式：上游第一条素材 + 是否开启对比
+  upstream: { type: Object, default: null },
+  comparing: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["select"]);
@@ -61,7 +86,9 @@ const pan = ref({ x: 0, y: 0 });
 let drag = null;
 
 const isImage = computed(() => !!props.item && props.item.kind === "image");
+const isVideo = computed(() => !!props.item && props.item.kind === "video");
 const thumbs = computed(() => props.media || []);
+const showStrip = computed(() => thumbs.value.length > 0);
 const activeIndex = computed(() => props.index);
 
 const imageStyle = computed(() => ({
@@ -79,7 +106,7 @@ watch(
 
 // 滚轮缩放：以指针位置为中心，仅对图像生效
 function onWheel(event) {
-  if (!isImage.value || !stageEl.value) return;
+  if (props.comparing || !isImage.value || !stageEl.value) return;
   const rect = stageEl.value.getBoundingClientRect();
   const cx = event.clientX - rect.left - rect.width / 2;
   const cy = event.clientY - rect.top - rect.height / 2;
@@ -98,7 +125,7 @@ function onWheel(event) {
 
 // 放大后按住拖动查看
 function onPointerDown(event) {
-  if (!isImage.value || zoom.value <= 1) return;
+  if (props.comparing || !isImage.value || zoom.value <= 1) return;
   drag = { x: event.clientX, y: event.clientY, pan: { ...pan.value } };
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
@@ -136,6 +163,12 @@ function onPointerUp() {
 
 .preview-stage.is-pannable {
   cursor: grab;
+}
+
+/* 视频 + 缩略条：给底部预留缩略条高度，竖屏视频的控制条不会被挡住 */
+.preview-stage.has-strip {
+  box-sizing: border-box;
+  padding-bottom: 78px;
 }
 
 .preview-stage img {
@@ -182,6 +215,7 @@ function onPointerUp() {
 }
 
 .preview-thumb {
+  position: relative;
   flex: 0 0 auto;
   width: 56px;
   height: 56px;
@@ -197,11 +231,23 @@ function onPointerUp() {
   border-color: var(--accent-yellow);
 }
 
-.preview-thumb img {
+.preview-thumb img,
+.thumb-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  pointer-events: none;
+}
+
+.thumb-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 9px;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 
 .thumb-kind {

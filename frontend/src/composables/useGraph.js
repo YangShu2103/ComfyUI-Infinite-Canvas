@@ -373,11 +373,42 @@ export function useGraph() {
 
   // 自身媒体的 id 序列快照：序列一变就说明被重排/删除/追加，通知下游
   const mediaKeys = new Map();
+  // 每个节点自身素材对应的 input 文件名，节点被删除时用来回收文件
+  const nodeOwnFiles = new Map();
+
+  function ownInputFiles(node) {
+    const names = [];
+    for (const item of node.data.media || []) {
+      const ref = item && item.ref;
+      if (!ref || ref.type !== "input") continue;
+      const filename = String(ref.filename || "");
+      if (filename.startsWith("infinite_canvas_")) names.push(filename);
+    }
+    return names;
+  }
+
+  // 只删仍无人引用的文件：其他节点的 media / inputMedia 里还有同一个引用就保留
+  function releaseInputFiles(filenames) {
+    const used = new Set();
+    for (const node of nodes.value) {
+      for (const item of [...(node.data.media || []), ...(node.data.inputMedia || [])]) {
+        if (item && item.ref && item.ref.filename) used.add(item.ref.filename);
+      }
+    }
+    for (const filename of filenames) {
+      if (used.has(filename)) continue;
+      fetch(`/infinite_canvas/api/media/${encodeURIComponent(filename)}`, {
+        method: "DELETE",
+      }).catch(() => {});
+    }
+  }
 
   function snapshotMediaKeys() {
     mediaKeys.clear();
+    nodeOwnFiles.clear();
     for (const node of nodes.value) {
       mediaKeys.set(node.id, (node.data.media || []).map((item) => item.id).join(","));
+      nodeOwnFiles.set(node.id, ownInputFiles(node));
     }
   }
 
@@ -385,17 +416,30 @@ export function useGraph() {
     nodes,
     () => {
       if (loading) return;
+      const alive = new Set();
       for (const node of nodes.value) {
+        alive.add(node.id);
         const key = (node.data.media || []).map((item) => item.id).join(",");
         const prev = mediaKeys.get(node.id);
         mediaKeys.set(node.id, key);
+        nodeOwnFiles.set(node.id, ownInputFiles(node));
         if (prev !== undefined && prev !== key) syncDownstream(node.id);
       }
-      // 节点被删掉后清掉快照，避免 id 复用后误判
-      if (mediaKeys.size !== nodes.value.length) {
-        const alive = new Set(nodes.value.map((node) => node.id));
-        for (const id of mediaKeys.keys()) if (!alive.has(id)) mediaKeys.delete(id);
+
+      // 节点被删掉后清掉快照，并回收它自己的 input 文件
+      let removedFiles = null;
+      for (const id of [...nodeOwnFiles.keys()]) {
+        if (alive.has(id)) continue;
+        const files = nodeOwnFiles.get(id) || [];
+        nodeOwnFiles.delete(id);
+        if (files.length) removedFiles = (removedFiles || []).concat(files);
       }
+      for (const id of [...mediaKeys.keys()]) {
+        if (!alive.has(id)) mediaKeys.delete(id);
+      }
+
+      // 等这一轮下游同步（断线回收 inputMedia）跑完，再确认文件是否真的没人引用
+      if (removedFiles) setTimeout(() => releaseInputFiles(removedFiles), 0);
     },
     { deep: true }
   );
@@ -493,7 +537,7 @@ export function useGraph() {
     edges.value = [];
     nodeSeq = 0;
     edgeSeq = 0;
-    mediaKeys.clear();
+    snapshotMediaKeys();
     viewport.value = { ...DEFAULT_VIEWPORT };
     nextTick(() => {
       flow.setViewport(DEFAULT_VIEWPORT);

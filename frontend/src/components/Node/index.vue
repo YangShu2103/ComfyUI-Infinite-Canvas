@@ -16,9 +16,11 @@
 
     <!-- 节点上方扇形操作：悬停 / 选中时出现 -->
     <NodeActions
+      ref="actionsRef"
       :visible="actionsVisible"
       :node-id="id"
       :media="ownMedia"
+      :input-media="inputMedia"
       :index="index"
       :label="data.label"
       @select="select"
@@ -39,15 +41,10 @@
           :title="item.name"
           @mousedown="onCardMouseDown($event, i)"
           @click="select(i)"
+          @dblclick.stop="openPreviewPanel(i)"
         >
-          <!-- 不拦截 mousedown，否则整块视频区域都无法拖动节点；控制条的单击仍然可用 -->
-          <video
-            v-if="item.kind === 'video' && i === index"
-            :src="item.url"
-            controls
-            playsinline
-            preload="metadata"
-          />
+          <!-- 视频不拦截 mousedown，整块区域仍可拖动节点；控制条按钮单独阻止冒泡 -->
+          <VideoPlayer v-if="item.kind === 'video' && i === index" :src="item.url" />
           <video
             v-else-if="item.kind === 'video'"
             :src="item.url"
@@ -447,6 +444,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
 import NodeActions from "./NodeActions.vue";
+import VideoPlayer from "./VideoPlayer.vue";
 import { useLibrary } from "../../composables/useLibrary.js";
 
 const props = defineProps({
@@ -576,6 +574,14 @@ const stripItems = computed(() => {
 
 function select(i) {
   props.data.index = i;
+}
+
+// 上方操作组件实例：双击素材时借用它的预览面板
+const actionsRef = ref(null);
+
+function openPreviewPanel(i) {
+  if (i !== index.value) select(i);
+  actionsRef.value?.openPreviewPanel();
 }
 
 // 堆叠定位：当前卡片居中，左右相邻卡片向两侧错开并缩小
@@ -1236,13 +1242,6 @@ async function run() {
   display: block;
   object-fit: cover;
   pointer-events: none;
-}
-
-/* 当前视频保留 controls 交互 */
-.media-stack-card.is-active video {
-  object-fit: contain;
-  pointer-events: auto;
-  background: #000;
 }
 
 /* 每张素材右上角的删除按钮 */
