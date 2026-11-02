@@ -1,14 +1,20 @@
 <template>
-  <div v-if="kind === 'image'" ref="stageEl" class="cmp-image" @pointerdown="startDrag">
+  <div
+    v-if="kind === 'image'"
+    ref="stageEl"
+    class="cmp-image"
+    :class="{ 'is-overlay': mode === 'overlay' }"
+    @pointerdown="startDrag"
+  >
     <div class="cmp-layer">
       <img :src="before.url" :alt="before.name" draggable="false" />
     </div>
-    <div class="cmp-layer" :style="{ clipPath: `inset(0 0 0 ${pos}%)` }">
+    <div class="cmp-layer" :style="afterStyle">
       <img :src="after.url" :alt="after.name" draggable="false" />
     </div>
     <span class="cmp-tag is-left">上游</span>
     <span class="cmp-tag is-right">当前</span>
-    <div class="cmp-line" :style="{ left: `${pos}%` }">
+    <div v-if="mode === 'split'" class="cmp-line" :style="{ left: `${pos}%` }">
       <span class="cmp-handle">
         <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
           <path
@@ -22,9 +28,34 @@
         </svg>
       </span>
     </div>
+
+    <!-- 对比模式切换：分割 / 叠加 -->
+    <div class="cmp-modes" @pointerdown.stop @click.stop>
+      <button
+        class="cmp-mode"
+        :class="{ 'is-active': mode === 'split' }"
+        type="button"
+        @click="mode = 'split'"
+      >
+        分割
+      </button>
+      <button
+        class="cmp-mode"
+        :class="{ 'is-active': mode === 'overlay' }"
+        type="button"
+        @click="mode = 'overlay'"
+      >
+        叠加
+      </button>
+    </div>
+    <div v-if="mode === 'overlay'" class="cmp-opacity" @pointerdown.stop @click.stop @wheel.stop>
+      <span>当前图</span>
+      <input v-model.number="opacity" type="range" min="0" max="100" step="1" />
+      <span class="cmp-opacity-num">{{ opacity }}%</span>
+    </div>
   </div>
 
-  <div v-else class="cmp-video">
+  <div v-else class="cmp-video" :style="{ bottom: `${bottomInset}px` }">
     <div class="cmp-side">
       <video
         ref="videoA"
@@ -33,6 +64,7 @@
         playsinline
         preload="metadata"
         @timeupdate="onTimeA"
+        @loadedmetadata="onMeta"
         @play="playing = true"
         @pause="playing = false"
         @ended="onEnded"
@@ -64,29 +96,53 @@
         :src="after.url"
         playsinline
         preload="metadata"
+        @loadedmetadata="onMeta"
         @ended="onEnded"
       />
       <span class="cmp-tag is-right">当前</span>
+    </div>
+
+    <!-- 底部进度条：拖动时两路同步 seek -->
+    <div class="cmp-progress" @pointerdown.stop @click.stop>
+      <input
+        type="range"
+        min="0"
+        :max="duration || 0"
+        step="0.01"
+        :value="current"
+        :disabled="!duration"
+        @input="onSeek"
+      />
     </div>
   </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 const props = defineProps({
   kind: { type: String, default: "image" },
   before: { type: Object, required: true },
   after: { type: Object, required: true },
+  // 底部缩略条占用的高度，避免进度条被遮住
+  bottomInset: { type: Number, default: 0 },
 });
 
-// ---------------- 图片：左右滑动对比 ----------------
+// ---------------- 图片：分割 / 叠加对比 ----------------
 const stageEl = ref(null);
 const pos = ref(50);
+const mode = ref("split");
+const opacity = ref(60);
 let dragging = false;
 
+const afterStyle = computed(() =>
+  mode.value === "overlay"
+    ? { opacity: `${opacity.value}%` }
+    : { clipPath: `inset(0 0 0 ${pos.value}%)` }
+);
+
 function startDrag(event) {
-  if (props.kind !== "image" || !stageEl.value) return;
+  if (props.kind !== "image" || mode.value !== "split" || !stageEl.value) return;
   dragging = true;
   updatePos(event);
   window.addEventListener("pointermove", updatePos);
@@ -166,8 +222,59 @@ function pauseAll() {
 
 function onEnded() {
   pauseAll();
-  if (Number.isFinite(videoA.value?.duration)) duration.value = videoA.value.duration;
+  const a = videoA.value;
+  if (a && Number.isFinite(a.duration)) {
+    duration.value = a.duration;
+    current.value = a.duration;
+  }
 }
+
+// 两路视频取较长的时长作为进度条范围
+function onMeta() {
+  const times = [videoA.value, videoB.value]
+    .filter(Boolean)
+    .map((video) => video.duration)
+    .filter((time) => Number.isFinite(time));
+  if (times.length) duration.value = Math.max(...times);
+}
+
+// 拖动进度条：暂停并让两路同步跳转
+function seekTo(seconds) {
+  if (!duration.value) return;
+  const target = Math.min(Math.max(seconds, 0), duration.value);
+  pauseAll();
+  current.value = target;
+  if (videoA.value) videoA.value.currentTime = target;
+  if (videoB.value) videoB.value.currentTime = target;
+}
+
+function onSeek(event) {
+  seekTo(parseFloat(event.target.value));
+}
+
+// 空格播放/暂停，左右方向键逐帧（按 30fps 估算）
+const FRAME = 1 / 30;
+
+function onKeydown(event) {
+  if (props.kind !== "video") return;
+  const target = event.target;
+  const tag = (target && target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable)) {
+    return;
+  }
+  if (event.code === "Space") {
+    event.preventDefault();
+    event.stopPropagation();
+    toggle();
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    seekTo(current.value + (event.key === "ArrowRight" ? FRAME : -FRAME));
+  }
+}
+
+onMounted(() => window.addEventListener("keydown", onKeydown, true));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
 </script>
 
 <style scoped>
@@ -178,6 +285,10 @@ function onEnded() {
   background: #0c0c10;
   cursor: ew-resize;
   touch-action: none;
+}
+
+.cmp-image.is-overlay {
+  cursor: default;
 }
 
 .cmp-layer {
@@ -299,5 +410,91 @@ function onEnded() {
   color: var(--c-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* ---------------- 图片对比模式切换 ---------------- */
+.cmp-modes {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 20;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(14, 14, 19, 0.82);
+  transform: translateX(-50%);
+}
+
+.cmp-mode {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.cmp-mode:hover {
+  color: var(--c-text);
+}
+
+.cmp-mode.is-active {
+  background: rgba(242, 255, 89, 0.16);
+  color: var(--accent-yellow);
+}
+
+.cmp-opacity {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgba(14, 14, 19, 0.82);
+  color: #cfcfd6;
+  font-size: 11px;
+  transform: translateX(-50%);
+}
+
+.cmp-opacity input {
+  width: 130px;
+  margin: 0;
+  accent-color: var(--accent-yellow);
+}
+
+.cmp-opacity-num {
+  min-width: 32px;
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---------------- 视频对比进度条 ---------------- */
+.cmp-progress {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  z-index: 20;
+  display: flex;
+}
+
+.cmp-progress input {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent-yellow);
+  cursor: pointer;
+}
+
+.cmp-progress input:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 </style>

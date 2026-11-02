@@ -1,6 +1,7 @@
 <template>
   <div
     class="demo-node"
+    :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mousedown="onRootMouseDown"
     @mouseenter="enterActions"
     @mouseleave="leaveActions"
@@ -130,7 +131,25 @@
       </svg>
     </button>
 
-    <!-- 操作面板：选中节点时出现在节点下方 20px -->
+    <!-- 右下角拖拽缩放：只改节点自身尺寸，面板/工具栏尺寸不变 -->
+    <div
+      class="node-resize"
+      title="拖动调整节点大小"
+      @pointerdown.stop.prevent="startResize"
+      @mousedown.stop
+      @click.stop
+    >
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+        <path
+          d="M13 3L3 13M13 8l-5 5M13 12l-1 1"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </svg>
+    </div>
+
     <Transition name="panel-fade">
       <div
         v-if="selected"
@@ -482,6 +501,45 @@ const deleteStyle = computed(() => ({
   top: `${-17 * deleteScale.value}px`,
   right: `${-17 * deleteScale.value}px`,
 }));
+
+// 节点尺寸：每个节点单独记忆（存进画布 JSON 的 data.w / data.h），最小为初始大小
+const MIN_NODE_W = 400;
+const MIN_NODE_H = 260;
+const nodeW = computed(() => Math.max(MIN_NODE_W, Number(props.data.w) || MIN_NODE_W));
+const nodeH = computed(() => Math.max(MIN_NODE_H, Number(props.data.h) || MIN_NODE_H));
+
+let resizeSession = null;
+
+function startResize(event) {
+  if (event.button !== 0) return;
+  resizeSession = {
+    x: event.clientX,
+    y: event.clientY,
+    w: nodeW.value,
+    h: nodeH.value,
+    zoom: flow.viewport.value.zoom || 1,
+  };
+  window.addEventListener("pointermove", onResizeMove);
+  window.addEventListener("pointerup", stopResize);
+  window.addEventListener("blur", stopResize);
+}
+
+function onResizeMove(event) {
+  if (!resizeSession) return;
+  const zoom = resizeSession.zoom || 1;
+  const nextW = (resizeSession.w + (event.clientX - resizeSession.x) / zoom);
+  const nextH = (resizeSession.h + (event.clientY - resizeSession.y) / zoom);
+  props.data.w = Math.round(Math.max(MIN_NODE_W, nextW));
+  props.data.h = Math.round(Math.max(MIN_NODE_H, nextH));
+}
+
+function stopResize() {
+  resizeSession = null;
+  window.removeEventListener("pointermove", onResizeMove);
+  window.removeEventListener("pointerup", stopResize);
+  window.removeEventListener("blur", stopResize);
+}
+
 
 // Alt / Option 拖动节点 = 复制：拖动期间只跟一个虚拟副本，松手才落成真实节点
 const ghost = ref({ active: false, x: 0, y: 0, width: 0, height: 0, label: "" });
@@ -1558,10 +1616,44 @@ async function run() {
   border-color: #ff6b6b;
 }
 
-/* 节点下方的操作面板 */
+/* 右下角缩放把手：随节点缩放显示，抓住后拖动改变节点尺寸 */
+.node-resize {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  color: rgba(230, 230, 234, 0.5);
+  cursor: nwse-resize;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.demo-node:hover .node-resize {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.node-resize:hover {
+  background: rgba(242, 255, 89, 0.12);
+  color: var(--accent-yellow);
+}
+
+.node-resize:active {
+  color: var(--accent-yellow);
+}
+
+/* 节点下方的操作面板：尺寸固定，始终与节点水平居中 */
 .node-panel {
   position: absolute;
-  left: -150px;
+  left: calc(50% - 350px);
   top: calc(100% + 21px);
   width: 700px;
   padding: 10px;

@@ -15,6 +15,7 @@
       :kind="item.kind"
       :before="upstream"
       :after="item"
+      :bottom-inset="showStrip && item.kind === 'video' ? 78 : 0"
     />
     <template v-else>
       <video
