@@ -93,22 +93,31 @@
     </div>
     <div v-else-if="!showProgress" class="node-empty">支持图片 / 视频预览</div>
 
-    <!-- 运行态：整个节点当进度条，从左向右填充，百分比居中 -->
+    <!-- 运行态：整体流光背景 + 上下布局（图标在上，文字在下），不显示假百分比 -->
     <div
       v-if="showProgress"
       class="node-progress"
-      :class="{ 'is-queued': runState.status === 'queued' }"
     >
-      <span class="node-progress-fill" :style="{ width: `${runPercent}%` }" />
-      <span v-if="runState.status === 'queued'" class="node-progress-spinner" />
-      <span
-        v-else-if="runState.status === 'error'"
-        class="node-progress-label is-error"
-        :title="runState.error"
-      >
-        {{ runState.error }}
-      </span>
-      <span v-else class="node-progress-label">{{ runPercent }}%</span>
+      <div v-if="runState.status === 'error'" class="node-progress-body">
+        <span class="node-progress-icon is-error">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
+            <path d="M12 7v6M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </span>
+        <span class="node-progress-label is-error" :title="runState.error">
+          {{ runState.error }}
+        </span>
+      </div>
+      <div v-else class="node-progress-body">
+        <span class="node-progress-icon">
+          <span class="node-progress-spinner" />
+        </span>
+        <span class="node-progress-label is-small">
+          {{ runState.status === "queued" ? queuedTitle : "生成中" }}
+        </span>
+        <span v-if="progressSub" class="node-progress-sub">{{ progressSub }}</span>
+      </div>
     </div>
 
     <button
@@ -847,10 +856,6 @@ const graph = inject("canvasGraph");
 
 // 当前节点的运行状态（由 useGraph 统一维护，不写进画布数据）
 const runState = computed(() => graph?.runStates?.[props.id] || null);
-const runPercent = computed(() => {
-  const ratio = Number(runState.value?.progress) || 0;
-  return Math.min(100, Math.max(0, Math.round(ratio * 100)));
-});
 
 // 运行中或排队中：运行按钮切换成"中断"
 const isBusy = computed(
@@ -863,6 +868,51 @@ const isBusy = computed(
 const showProgress = computed(() => {
   const status = runState.value?.status;
   return status === "queued" || status === "running" || status === "error";
+});
+
+// 计时：运行/排队期间每秒刷新一次，让等待有"在走"的感知
+const nowTick = ref(Date.now());
+let clockTimer = 0;
+watch(
+  () => showProgress.value,
+  (on) => {
+    clearInterval(clockTimer);
+    if (!on) return;
+    nowTick.value = Date.now();
+    clockTimer = setInterval(() => {
+      nowTick.value = Date.now();
+    }, 1000);
+  },
+  { immediate: true }
+);
+onBeforeUnmount(() => clearInterval(clockTimer));
+
+function formatClock(seconds) {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+const elapsedText = computed(() => {
+  const startedAt = Number(runState.value?.startedAt) || 0;
+  if (!startedAt) return "";
+  return formatClock((nowTick.value - startedAt) / 1000);
+});
+
+const queuedTitle = computed(() => {
+  const position = Number(runState.value?.position) || 0;
+  return position > 0 ? `队列第 ${position} 位` : "排队中";
+});
+
+// 排队/运行都只显示状态 + 计时，不给不可信的百分比
+const progressSub = computed(() => {
+  if (!elapsedText.value) return "";
+  return runState.value?.status === "queued"
+    ? `已等 ${elapsedText.value}`
+    : `已用 ${elapsedText.value}`;
 });
 
 function onRunClick() {
@@ -1376,7 +1426,7 @@ async function run() {
   font-size: 12px;
 }
 
-/* 运行态：整个节点当进度条，绝对定位覆盖，不改变原有布局 */
+/* 运行态：不铺满颜色，只在中心做一层缓慢呼吸的黄色光晕 */
 .node-progress {
   position: absolute;
   inset: 0;
@@ -1389,32 +1439,14 @@ async function run() {
   pointer-events: none;
 }
 
-.node-progress-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  /* 主题色 --accent-yellow(#f2ff59) 的半透明渐变 */
-  background: linear-gradient(
-    90deg,
-    rgba(242, 255, 89, 0.12),
-    rgba(242, 255, 89, 0.34),
-    rgba(242, 255, 89, 0.12)
-  );
-  background-size: 200% 100%;
-  animation: node-run-shimmer 1.1s linear infinite;
-  transition: width 0.35s ease;
-}
-
-/* 排队中：不显示进度，用居中转圈 + 呼吸光晕表示已入队 */
-.node-progress.is-queued::before {
+.node-progress::before {
   content: "";
   position: absolute;
   inset: 0;
   background: radial-gradient(
     circle at center,
-    rgba(242, 255, 89, 0.1),
-    rgba(242, 255, 89, 0) 68%
+    rgba(242, 255, 89, 0.13),
+    rgba(242, 255, 89, 0) 48%
   );
   animation: node-queued-pulse 1.6s ease-in-out infinite;
 }
@@ -1467,13 +1499,45 @@ async function run() {
   text-overflow: ellipsis;
 }
 
-@keyframes node-run-shimmer {
-  from {
-    background-position: 0% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
+.node-progress-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 92%;
+  padding: 0 8px;
+}
+
+.node-progress-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--c-muted);
+}
+
+.node-progress-icon.is-error {
+  color: #ff6b6b;
+}
+
+.node-progress-label.is-small {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.node-progress-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
 }
 
 /* Alt/Option 拖动时的虚拟副本：跟随光标，不参与任何命中检测 */

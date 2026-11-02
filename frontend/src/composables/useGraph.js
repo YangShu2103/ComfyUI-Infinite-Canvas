@@ -26,6 +26,85 @@ function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// ------------------------------------------------------------ 完成通知
+// 任务跑完时：页面在后台就闪标题，同时播放两声提示音（WebAudio 合成，不依赖音频文件）
+// 本页面通常被嵌在 ComfyUI 的 iframe 里，标题要改父页面的，标签栏才会跟着闪
+function hostDocument() {
+  try {
+    return window.top.document;
+  } catch {
+    return document;
+  }
+}
+const hostDoc = hostDocument();
+let baseTitle = hostDoc.title || "Infinite Canvas";
+let titleTimer = 0;
+let audioCtx = null;
+
+function audioContext() {
+  if (audioCtx) return audioCtx;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return null;
+  audioCtx = new Ctor();
+  return audioCtx;
+}
+
+function unlockAudio() {
+  const ctx = audioContext();
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+}
+
+function playDoneSound() {
+  const ctx = audioContext();
+  if (!ctx) return;
+  const play = () => {
+    const now = ctx.currentTime;
+    [660, 880].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now + i * 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.16, now + i * 0.18 + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.18 + 0.3);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + i * 0.18);
+      osc.stop(now + i * 0.18 + 0.32);
+    });
+  };
+  if (ctx.state === "suspended") ctx.resume().then(play).catch(() => {});
+  else play();
+}
+
+function stopTitleFlash() {
+  if (!titleTimer) return;
+  clearInterval(titleTimer);
+  titleTimer = 0;
+  hostDoc.title = baseTitle;
+}
+
+// 只在标签页不可见时闪（用户正看着画布就不打扰）
+function flashTitle() {
+  if (!hostDoc.hidden) return;
+  clearInterval(titleTimer);
+  let on = false;
+  titleTimer = setInterval(() => {
+    on = !on;
+    hostDoc.title = on ? "● 完成" : baseTitle;
+  }, 900);
+}
+
+function notifyDone() {
+  playDoneSound();
+  flashTitle();
+}
+
+// 第一次交互时解锁音频，避免完成提示音被浏览器自动播放策略拦截
+window.addEventListener("pointerdown", unlockAudio, { once: true, capture: true });
+hostDoc.addEventListener("visibilitychange", () => {
+  if (!hostDoc.hidden) stopTitleFlash();
+});
+
 // 工作流列表顺序由「工作流配置」维护，新节点默认用列表里的第一个
 let workflowNames = [];
 let workflowsLoaded = false;
@@ -789,6 +868,8 @@ export function useGraph() {
     };
   }
 
+  // 进度百分比来自采样步数，加载模型/解码阶段没有事件，容易长时间停在 0%，
+  // 因此界面上不做进度估算，只显示状态 + 计时（见 Node/index.vue）
   function onSocketMessage(event) {
     let message = null;
     try {
@@ -807,13 +888,9 @@ export function useGraph() {
 
     if (message.type === "execution_start") {
       state.status = "running";
-      state.progress = 0;
-    } else if (message.type === "progress") {
+    } else if (message.type === "progress" || message.type === "progress_state") {
+      // 只用来确认任务确实在跑；不换算成百分比（阶段划分不可靠）
       state.status = "running";
-      const max = Number(data.max) || 0;
-      const value = Number(data.value) || 0;
-      // 留 1% 给最后的保存阶段
-      if (max > 0) state.progress = Math.min(0.99, Math.max(0, value / max));
     } else if (message.type === "execution_success") {
       checkPrompt(nodeId, promptId);
     } else if (message.type === "execution_interrupted") {
@@ -852,7 +929,6 @@ export function useGraph() {
     const state = runStates[nodeId];
     if (state) {
       state.status = "error";
-      state.progress = 0;
       state.error = message || "运行失败";
     }
     setTimeout(() => {
@@ -871,10 +947,8 @@ export function useGraph() {
     const items = itemsFromRefs(images);
     if (items.length) {
       appendItems(nodeId, items);
-      if (state) {
-        state.status = "done";
-        state.progress = 1;
-      }
+      if (state) state.status = "done";
+      notifyDone();
     } else if (state) {
       state.status = "error";
       state.error = "工作流没有返回素材";
@@ -916,10 +990,11 @@ export function useGraph() {
     nodePrompts.set(nodeId, promptId);
     runStates[nodeId] = {
       status: "queued",
-      progress: 0,
       error: "",
       position: 0,
       promptId,
+      // 从提交开始计时（排队时间也算），界面显示已等/已用时长
+      startedAt: Date.now(),
     };
     ensureSocket();
 
