@@ -4,6 +4,8 @@
 
 前端是 Vue 3 + Vue Flow，后端是一个轻量 aiohttp 扩展，只负责托管页面、读写配置、代理执行与缩略图生成。
 
+![ComfyUI 顶部菜单中的 Infinite-Canvas 入口](docs/images/entry.png)
+
 ![画布总览](docs/images/canvas.jpg)
 
 ## 功能
@@ -83,9 +85,9 @@ git clone https://github.com/YangShu2103/ComfyUI-Infinite-Canvas.git ComfyUI-Inf
 
 4. 把节点上的素材拖到下一个节点，即可衔接下一条工作流。
 
-## 推荐搭配：[ComfyUI_image_picker](https://github.com/YangShu2103/ComfyUI_image_picker)
+## 推荐搭配：[ComfyUI\_image\_picker](https://github.com/YangShu2103/ComfyUI_image_picker)
 
-工作流里需要一次性接收 **多张图（图像列表）** 时，推荐配合 [ComfyUI_image_picker](https://github.com/YangShu2103/ComfyUI_image_picker) 节点使用：
+工作流里需要一次性接收 **多张图（图像列表）** 时，推荐配合 [ComfyUI\_image\_picker](https://github.com/YangShu2103/ComfyUI_image_picker) 节点使用：
 
 ![Image Picker 字段配置](docs/images/image-picker.jpg)
 
