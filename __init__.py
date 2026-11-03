@@ -163,6 +163,27 @@ def _save_settings(address=None, workflow_order=None):
     return _load_settings()
 
 
+def _comfy_base(request):
+    """后端访问 ComfyUI 自身接口用的地址
+
+    经反向代理（https 域名）打开画布时，request.url.origin 是公网域名，
+    服务端再回环请求它往往被代理挡掉（表现为 Server disconnected），
+    所以优先走本机 127.0.0.1 + 本进程监听的端口。
+    """
+    try:
+        from server import PromptServer
+
+        port = getattr(PromptServer.instance, "port", None)
+        if port:
+            return f"http://127.0.0.1:{int(port)}"
+    except Exception:
+        pass
+    configured = _load_settings().get("comfy_address", "")
+    if configured:
+        return configured.rstrip("/")
+    return str(request.url.origin())
+
+
 def _save_workflow(name, workflow):
     os.makedirs(_workflow_dir(), exist_ok=True)
     with open(_workflow_path(name), "w", encoding="utf-8") as handle:
@@ -1308,7 +1329,7 @@ def register_routes(app):
         _apply_params(workflow, payload.get("params"))
         _apply_media_params(workflow, name)
 
-        origin = str(request.url.origin())
+        origin = _comfy_base(request)
         # 前端用同一个 clientId 连 /ws：ComfyUI 的进度消息只推给提交任务的客户端
         raw_client = str(payload.get("clientId") or "").strip()
         client_id = raw_client if re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", raw_client) else uuid.uuid4().hex
@@ -1338,7 +1359,7 @@ def register_routes(app):
         if not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", prompt_id):
             return web.json_response({"error": "任务 id 不合法"}, status=400)
 
-        origin = str(request.url.origin())
+        origin = _comfy_base(request)
         try:
             async with aiohttp.ClientSession() as session:
                 # 队列里的状态优先：排队中的任务 /history 还是空的
@@ -1368,7 +1389,7 @@ def register_routes(app):
         if not re.fullmatch(r"[0-9a-zA-Z_-]{1,64}", prompt_id):
             return web.json_response({"error": "任务 id 不合法"}, status=400)
 
-        origin = str(request.url.origin())
+        origin = _comfy_base(request)
         try:
             async with aiohttp.ClientSession() as session:
                 state = await _queue_state(session, origin, prompt_id)

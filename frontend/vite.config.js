@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
 // 本地开发时接口转发到正在运行的 ComfyUI（可用 COMFYUI_URL 覆盖）
-const COMFYUI_URL = 'http://127.0.0.1:8188' //process.env.COMFYUI_URL || "http://127.0.0.1:8188";
+const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
 
 const proxy = {
   "/infinite_canvas/api": {
