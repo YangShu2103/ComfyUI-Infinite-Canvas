@@ -49,14 +49,14 @@
         :title="thumb.name"
         @click.stop="emit('select', i)"
       >
-        <img v-if="thumb.kind === 'image'" :src="thumb.url" alt="" draggable="false" />
-        <video
-          v-else-if="thumb.kind === 'video'"
-          class="thumb-video"
-          :src="thumb.url"
-          muted
-          playsinline
-          preload="metadata"
+        <img
+          v-if="thumb.kind === 'image' || thumb.kind === 'video'"
+          :src="thumbSrc(thumb)"
+          alt=""
+          draggable="false"
+          loading="lazy"
+          decoding="async"
+          @error="onThumbError(thumb)"
         />
         <span v-else class="thumb-kind">音频</span>
         <span v-if="thumb.kind === 'video'" class="thumb-badge">▶</span>
@@ -66,7 +66,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { clamp } from "../../../utils/image";
 import CompareView from "./CompareView.vue";
 
@@ -90,6 +90,16 @@ const isImage = computed(() => !!props.item && props.item.kind === "image");
 const isVideo = computed(() => !!props.item && props.item.kind === "video");
 const thumbs = computed(() => props.media || []);
 const showStrip = computed(() => thumbs.value.length > 0);
+
+// 底部素材条只加载缩略图；失败时按 id 退回原图
+const thumbFails = reactive({});
+function onThumbError(thumb) {
+  if (thumb && thumb.id) thumbFails[thumb.id] = true;
+}
+function thumbSrc(thumb) {
+  if (!thumb) return "";
+  return (thumb.thumbUrl && !thumbFails[thumb.id]) ? thumb.thumbUrl : thumb.url;
+}
 const activeIndex = computed(() => props.index);
 
 const imageStyle = computed(() => ({
@@ -232,8 +242,7 @@ function onPointerUp() {
   border-color: var(--accent-yellow);
 }
 
-.preview-thumb img,
-.thumb-video {
+.preview-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;

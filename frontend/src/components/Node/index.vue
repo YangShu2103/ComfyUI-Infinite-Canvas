@@ -46,12 +46,17 @@
         >
           <!-- 视频不拦截 mousedown，整块区域仍可拖动节点；控制条按钮单独阻止冒泡 -->
           <VideoPlayer v-if="item.kind === 'video' && i === index" :src="item.url" />
-          <video
+          <!-- 非当前视频只显示封面缩略图，避免几十个节点同时请求原片 -->
+          <img
             v-else-if="item.kind === 'video'"
-            :src="item.url"
+            :src="displaySrc(item)"
             class="media-thumb"
-            muted
-            preload="metadata"
+            :alt="item.name"
+            draggable="false"
+            loading="lazy"
+            decoding="async"
+            @error="onThumbError(item)"
+            @dragstart.prevent
           />
           <audio
             v-else-if="item.kind === 'audio' && i === index"
@@ -60,7 +65,17 @@
             controls
           />
           <div v-else-if="item.kind === 'audio'" class="media-audio-thumb">音频</div>
-          <img v-else :src="item.url" :alt="item.name" draggable="false" @dragstart.prevent />
+          <img
+            v-else
+            :src="displaySrc(item)"
+            :alt="item.name"
+            draggable="false"
+            loading="lazy"
+            decoding="async"
+            @error="onThumbError(item)"
+            @dragstart.prevent
+          />
+          <span v-if="item.kind === 'video' && i !== index" class="card-play">▶</span>
           <!-- 每张素材右上角的删除按钮 -->
           <button
             class="card-delete"
@@ -215,19 +230,16 @@
               @dragend="onStripDragEnd"
               @click.stop="onStripClick(entry)"
             >
-              <video
-                v-if="entry.item.kind === 'video'"
-                :src="entry.item.url"
-                class="strip-video"
-                muted
-                preload="metadata"
-              />
-              <span v-else-if="entry.item.kind === 'audio'" class="strip-audio">音频</span>
+              <span v-if="entry.item.kind === 'audio'" class="strip-audio">音频</span>
+              <!-- 面板素材条只加载缩略图，原片留给预览和下载 -->
               <img
                 v-else
-                :src="entry.item.url"
+                :src="displaySrc(entry.item)"
                 :alt="entry.item.name"
                 draggable="false"
+                loading="lazy"
+                decoding="async"
+                @error="onThumbError(entry.item)"
                 @dragstart.prevent
               />
               <span v-if="entry.item.kind === 'video'" class="strip-badge">▶</span>
@@ -447,19 +459,14 @@
           visibility: previewCard.ready ? 'visible' : 'hidden',
         }"
       >
-        <video
-          v-if="previewCard.item.kind === 'video'"
-          :src="previewCard.item.url"
-          autoplay
-          muted
-          loop
-          playsinline
-          @loadedmetadata="fitPreview"
-        />
+        <!-- 气泡只用缩略图，避免悬停时去拉原片 / 原图 -->
         <img
-          v-else-if="previewCard.item.kind === 'image'"
-          :src="previewCard.item.url"
+          v-if="previewCard.item.kind === 'image' || previewCard.item.kind === 'video'"
+          :src="displaySrc(previewCard.item)"
+          :alt="previewCard.item.name"
+          draggable="false"
           @load="fitPreview"
+          @error="onThumbError(previewCard.item)"
         />
         <div v-else class="preview-bubble-audio">音频</div>
         <span class="preview-bubble-name">{{ previewCard.item.name }}</span>
@@ -469,7 +476,7 @@
 </template>
 
 <script setup>
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
 import NodeActions from "./NodeActions.vue";
 import VideoPlayer from "./VideoPlayer.vue";
@@ -665,6 +672,27 @@ function cardStyle(i) {
 // 点非当前卡片只用于切换，不触发节点拖动
 function onCardMouseDown(event, i) {
   if (i !== index.value) event.stopPropagation();
+}
+
+// 缩略图加载失败（视频抽帧失败等）时退回原图，避免卡片出现空白
+const thumbFails = reactive({});
+
+function mediaKey(item) {
+  const ref = item && item.ref;
+  if (ref && ref.filename) return `${ref.type || ""}:${ref.subfolder || ""}/${ref.filename}`;
+  return (item && item.id) || "";
+}
+
+function onThumbError(item) {
+  const key = mediaKey(item);
+  if (key) thumbFails[key] = true;
+}
+
+// 展示用地址：优先后端缩略图，失败或无引用（本地 blob）时用原图
+function displaySrc(item) {
+  if (!item) return "";
+  if (item.thumbUrl && !thumbFails[mediaKey(item)]) return item.thumbUrl;
+  return item.url;
 }
 
 // 面板媒体条：悬停缩略图时的快速预览气泡（Teleport 到 body，避免被节点/面板裁剪）
@@ -1349,6 +1377,21 @@ async function run() {
   height: 100%;
   display: block;
   object-fit: cover;
+  pointer-events: none;
+}
+
+/* 非当前视频卡片的播放角标（只显示封面缩略图） */
+.card-play {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
   pointer-events: none;
 }
 

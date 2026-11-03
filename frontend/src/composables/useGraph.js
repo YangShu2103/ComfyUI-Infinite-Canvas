@@ -134,17 +134,27 @@ if (typeof window !== "undefined") {
 }
 loadWorkflowNames();
 
-// 序列化时去掉运行时字段（url 由 ref 推导，blob 是上传前的临时数据）
+// 缩略图地址：后端按 ref 生成并缓存 WebP，只用于节点/面板展示；执行、下载、预览仍用原图
+function mediaThumbUrl(ref) {
+  const params = new URLSearchParams({
+    filename: ref.filename || "",
+    subfolder: ref.subfolder || "",
+    type: ref.type || "input",
+  });
+  return `/infinite_canvas/api/library/thumb?${params.toString()}`;
+}
+
+// 序列化时去掉运行时字段（url / thumbUrl 由 ref 推导，blob 是上传前的临时数据）
 function stripMediaItem(item) {
-  const { url, blob, ...rest } = item;
+  const { url, thumbUrl, blob, ...rest } = item;
   return rest;
 }
 
-// 反序列化时根据 ref 还原 /view 地址（JSON 里只存引用，不存完整 URL）
+// 反序列化时根据 ref 还原 /view 地址与原图缩略图地址（JSON 里只存引用，不存完整 URL）
 function hydrateMediaItem(item) {
   if (!item) return item;
   if (!item.ref || !item.ref.filename) return item;
-  return { ...item, url: mediaUrl(item.ref) };
+  return { ...item, url: mediaUrl(item.ref), thumbUrl: mediaThumbUrl(item.ref) };
 }
 
 export function useGraph() {
@@ -222,6 +232,7 @@ export function useGraph() {
         kind,
         ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "input" },
         url: mediaUrl(ref),
+        thumbUrl: mediaThumbUrl(ref),
       };
     } catch {
       // 接口不可用时退回本地预览（刷新后失效，但界面仍可用）
@@ -254,6 +265,7 @@ export function useGraph() {
         kind: ref.kind || guessKind(ref.filename),
         ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "output" },
         url: mediaUrl(ref),
+        thumbUrl: mediaThumbUrl(ref),
       }));
   }
 
