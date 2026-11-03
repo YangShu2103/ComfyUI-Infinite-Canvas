@@ -32,6 +32,7 @@
         @focus="focusLastNode"
         @fit="fitCanvasView"
         @canvas="openDialog('canvas')"
+        @assets="openDialog('assets')"
         @workflow="openDialog('workflow')"
       />
     </div>
@@ -77,6 +78,13 @@ const {
   spawnItemsNodeAt,
   itemsFromRefs,
   uploadAsset,
+  retryUpload,
+  waitForUploads,
+  markUploading,
+  clearUploading,
+  markWaiting,
+  clearWaiting,
+  nodeBusy,
   replaceMediaItem,
   spawnDetachedNode,
   exportCanvas,
@@ -112,6 +120,13 @@ provide("canvasGraph", {
   duplicateNode,
   itemsFromRefs,
   uploadAsset,
+  retryUpload,
+  waitForUploads,
+  markUploading,
+  clearUploading,
+  markWaiting,
+  clearWaiting,
+  nodeBusy,
   replaceMediaItem,
   spawnDetachedNode,
   runStates,

@@ -69,6 +69,35 @@
       </svg>
     </button>
 
+    <button class="tb-btn" type="button" title="资产管理" @click="emit('assets')">
+      <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+        <rect
+          x="3.5"
+          y="3.5"
+          width="12"
+          height="16"
+          rx="2"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+        />
+        <path
+          d="M7 8h5M7 11.5h5M7 15h3"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
+        <path
+          d="M18.5 6.5v11a2 2 0 0 1-2 2H8"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
+      </svg>
+    </button>
+
     <button class="tb-btn" type="button" title="工作流配置" @click="emit('workflow')">
       <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
         <path
@@ -86,7 +115,7 @@
 </template>
 
 <script setup>
-const emit = defineEmits(["focus", "fit", "canvas", "workflow"]);
+const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
 </script>
 
 <style scoped>

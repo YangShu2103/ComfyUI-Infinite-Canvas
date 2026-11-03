@@ -47,17 +47,23 @@
           <!-- 视频不拦截 mousedown，整块区域仍可拖动节点；控制条按钮单独阻止冒泡 -->
           <VideoPlayer v-if="item.kind === 'video' && i === index" :src="item.url" />
           <!-- 非当前视频只显示封面缩略图，避免几十个节点同时请求原片 -->
-          <img
-            v-else-if="item.kind === 'video'"
-            :src="displaySrc(item)"
-            class="media-thumb"
-            :alt="item.name"
-            draggable="false"
-            loading="lazy"
-            decoding="async"
-            @error="onThumbError(item)"
-            @dragstart.prevent
-          />
+          <!-- 缩略图还没生成时用占位块，不能把视频地址塞进 <img>（会显示成裂图） -->
+          <template v-else-if="item.kind === 'video'">
+            <img
+              v-if="videoThumb(item)"
+              :src="videoThumb(item)"
+              class="media-thumb"
+              :alt="item.name"
+              draggable="false"
+              loading="lazy"
+              decoding="async"
+              @error="onThumbError(item)"
+              @dragstart.prevent
+            />
+            <div v-else class="media-thumb is-placeholder">
+              <span class="media-placeholder-icon">▶</span>
+            </div>
+          </template>
           <audio
             v-else-if="item.kind === 'audio' && i === index"
             :src="item.url"
@@ -76,6 +82,18 @@
             @dragstart.prevent
           />
           <span v-if="item.kind === 'video' && i !== index" class="card-play">▶</span>
+          <!-- 上传过程不在素材上做任何提示，只在失败时给个可点击的重试 -->
+          <button
+            v-if="item.error"
+            class="card-upload is-error"
+            type="button"
+            :title="`${item.error}，点击重试`"
+            @pointerdown.stop
+            @mousedown.stop
+            @click.stop="retryItem(item)"
+          >
+            {{ item.error }} · 重试
+          </button>
           <!-- 每张素材右上角的删除按钮 -->
           <button
             class="card-delete"
@@ -113,7 +131,7 @@
       v-if="showProgress"
       class="node-progress"
     >
-      <div v-if="runState.status === 'error'" class="node-progress-body">
+      <div v-if="runState?.status === 'error'" class="node-progress-body">
         <span class="node-progress-icon is-error">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
             <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
@@ -129,9 +147,19 @@
           <span class="node-progress-spinner" />
         </span>
         <span class="node-progress-label is-small">
-          {{ runState.status === "queued" ? queuedTitle : "生成中" }}
+          {{
+            runState?.status === "waiting"
+              ? "等待中"
+              : runState?.status === "uploading"
+                ? "文件上传中…"
+                : runState?.status === "queued"
+                  ? queuedTitle
+                  : "生成中"
+          }}
         </span>
-        <span v-if="progressSub" class="node-progress-sub">{{ progressSub }}</span>
+        <span v-if="progressSub && runState?.status !== 'uploading'" class="node-progress-sub">
+          {{ progressSub }}
+        </span>
       </div>
     </div>
 
@@ -231,7 +259,21 @@
               @click.stop="onStripClick(entry)"
             >
               <span v-if="entry.item.kind === 'audio'" class="strip-audio">音频</span>
-              <!-- 面板素材条只加载缩略图，原片留给预览和下载 -->
+              <!-- 面板素材条只加载缩略图，原片留给预览和下载；
+                   视频还没生成封面时用占位块，不能把视频地址塞进 <img> -->
+              <template v-else-if="entry.item.kind === 'video'">
+                <img
+                  v-if="videoThumb(entry.item)"
+                  :src="videoThumb(entry.item)"
+                  :alt="entry.item.name"
+                  draggable="false"
+                  loading="lazy"
+                  decoding="async"
+                  @error="onThumbError(entry.item)"
+                  @dragstart.prevent
+                />
+                <span v-else class="strip-thumb-placeholder">▶</span>
+              </template>
               <img
                 v-else
                 :src="displaySrc(entry.item)"
@@ -412,10 +454,10 @@
             class="panel-run"
             :class="{ 'is-stop': isBusy }"
             type="button"
-            :disabled="running"
+            :disabled="isUploading || isWaiting"
             @click.stop="onRunClick"
           >
-            {{ running ? "提交中…" : isBusy ? "中断" : "运行" }}
+            {{ isWaiting ? "等待中" : isUploading ? "上传中" : isBusy ? "中断" : "运行" }}
           </button>
         </div>
         <div v-if="runError" class="panel-error">{{ runError }}</div>
@@ -461,14 +503,16 @@
       >
         <!-- 气泡只用缩略图，避免悬停时去拉原片 / 原图 -->
         <img
-          v-if="previewCard.item.kind === 'image' || previewCard.item.kind === 'video'"
-          :src="displaySrc(previewCard.item)"
+          v-if="previewThumb(previewCard.item)"
+          :src="previewThumb(previewCard.item)"
           :alt="previewCard.item.name"
           draggable="false"
           @load="fitPreview"
           @error="onThumbError(previewCard.item)"
         />
-        <div v-else class="preview-bubble-audio">音频</div>
+        <div v-else class="preview-bubble-audio">
+          {{ previewCard.item.kind === "video" ? "视频" : "音频" }}
+        </div>
         <span class="preview-bubble-name">{{ previewCard.item.name }}</span>
       </div>
     </Teleport>
@@ -695,6 +739,20 @@ function displaySrc(item) {
   return item.url;
 }
 
+// 视频封面地址：只认服务端缩略图，拿不到就返回空串（由模板渲染占位块）
+function videoThumb(item) {
+  if (!item || !item.thumbUrl) return "";
+  return thumbFails[mediaKey(item)] ? "" : item.thumbUrl;
+}
+
+// 预览气泡用：视频只给封面，图片给缩略图（失败时退回原图）
+function previewThumb(item) {
+  if (!item) return "";
+  if (item.kind === "video") return videoThumb(item);
+  if (item.kind !== "image") return "";
+  return displaySrc(item);
+}
+
 // 面板媒体条：悬停缩略图时的快速预览气泡（Teleport 到 body，避免被节点/面板裁剪）
 const previewCard = ref(null);
 let previewTimer = null;
@@ -724,8 +782,8 @@ function openPreview(event, entry) {
       height: 0,
       ready: false,
     };
-    // 音频没有尺寸可测，直接给个固定小卡片
-    if (entry.item.kind !== "image" && entry.item.kind !== "video") {
+    // 音频和还没封面的视频没有尺寸可测，直接给个固定小卡片
+    if (!previewThumb(entry.item)) {
       placePreview(200, 88, true);
     }
   }, 260);
@@ -882,6 +940,11 @@ function removeNode() {
 
 const graph = inject("canvasGraph");
 
+// 上传失败后点卡片上的"重试"，用还留在内存里的原始文件重新上传
+function retryItem(item) {
+  graph?.retryUpload?.(item);
+}
+
 // 当前节点的运行状态（由 useGraph 统一维护，不写进画布数据）
 const runState = computed(() => graph?.runStates?.[props.id] || null);
 
@@ -892,10 +955,22 @@ const isBusy = computed(
     (runState.value.status === "running" || runState.value.status === "queued")
 );
 
-// 排队中显示 loading；完成态留的 1 秒清理期不能盖住刚出现的产物
+// 派生节点还在等上游素材上传：按钮显示"上传中"且不可点击
+const isUploading = computed(() => runState.value?.status === "uploading");
+
+// 上游节点还没生成完：当前节点处于"等待中"，上游结束后会自动提交
+const isWaiting = computed(() => runState.value?.status === "waiting");
+
+// 覆盖层：uploading（等素材上传）/ waiting（等上游）/ queued / running / error 都显示
 const showProgress = computed(() => {
   const status = runState.value?.status;
-  return status === "queued" || status === "running" || status === "error";
+  return (
+    status === "uploading" ||
+    status === "waiting" ||
+    status === "queued" ||
+    status === "running" ||
+    status === "error"
+  );
 });
 
 // 计时：运行/排队期间每秒刷新一次，让等待有"在走"的感知
@@ -935,10 +1010,10 @@ const queuedTitle = computed(() => {
   return position > 0 ? `队列第 ${position} 位` : "排队中";
 });
 
-// 排队/运行都只显示状态 + 计时，不给不可信的百分比
+// 排队/等待/运行都只显示状态 + 计时，不给不可信的百分比
 const progressSub = computed(() => {
   if (!elapsedText.value) return "";
-  return runState.value?.status === "queued"
+  return runState.value?.status === "queued" || runState.value?.status === "waiting"
     ? `已等 ${elapsedText.value}`
     : `已用 ${elapsedText.value}`;
 });
@@ -1256,22 +1331,63 @@ watch(
   { immediate: true }
 );
 
-const running = ref(false);
 const runError = ref("");
 
-// 运行：提交后立刻返回任务 id；有自身素材时马上派生下游节点承接产物，
-// 等待和进度都放在下游节点上，当前节点不被阻塞
+// 当前节点还没结束的上游（上传 / 等待 / 排队 / 运行 / 刚完成）
+function busyUpstreamIds() {
+  const upstream = flow.edges.value
+    .filter((edge) => edge.target === props.id)
+    .map((edge) => edge.source);
+  return upstream.filter((id) => graph.nodeBusy?.(id));
+}
+
+// 轮询等上游全部结束；上游节点被删或超时也会放开，避免一直卡住
+function waitUpstreamsIdle(timeoutMs = 30 * 60 * 1000) {
+  if (!busyUpstreamIds().length) return Promise.resolve();
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const gone = !flow.nodes.value.some((node) => node.id === props.id);
+      const idle = !busyUpstreamIds().length;
+      if (gone || idle || Date.now() - startedAt > timeoutMs) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 300);
+  });
+}
+
+// 运行：有自身素材时立刻派生下游节点承接产物（空节点即出现），
+// 素材还在上传就先在它身上显示"文件上传中…"，上传落定后再真正提交；当前节点不被阻塞。
+// 允许连续点击派发多个节点，每次点击都独立等待素材后各自提交
 async function run() {
-  if (running.value) return;
   if (!props.data.workflow) {
     runError.value = "先在左侧选择工作流";
     return;
   }
 
   runError.value = "";
-  running.value = true;
+
+  const targetId = ownMedia.value.length ? graph.spawnChildNode(props.id) : props.id;
 
   try {
+    // 上游还在上传/等待/排队/运行/刚完成时不能直接提交，否则拿不到上游产物：
+    // 先以"等待中"占住下游节点，等上游结束再提交（状态保留到 trackPrompt 接管）
+    if (busyUpstreamIds().length) {
+      graph.markWaiting(targetId);
+      await waitUpstreamsIdle();
+    }
+    // 自己或上游节点的素材还在上传时，不打断用户操作：等这些素材上传落定再提交
+    const uploadIds = [...ownMedia.value, ...inputMedia.value]
+      .filter((item) => item.pending && item.id)
+      .map((item) => item.id);
+    if (uploadIds.length) {
+      if (targetId !== props.id) graph.markUploading(targetId);
+      await graph.waitForUploads(uploadIds);
+      if ([...ownMedia.value, ...inputMedia.value].some((item) => item.error)) {
+        throw new Error("有素材上传失败，请在卡片上重试");
+      }
+    }
     // 素材引用带 type/subfolder：产物在 output 目录时由后端按需接入 input 再提交
     const imageRefs = ownMedia.value
       .filter((item) => item.kind === "image" && item.ref?.filename)
@@ -1285,25 +1401,25 @@ async function run() {
       params[field.nodeId][field.key] = resolveValue(field);
     }
 
-    // 有自身素材 → 先派生下游节点（立即出现），等待和进度都留在它身上
-    const targetId = ownMedia.value.length ? graph.spawnChildNode(props.id) : props.id;
-
-    try {
-      const promptId = await graph.submitExecution({
-        workflow: props.data.workflow,
-        params,
-        imageRefs,
-      });
-      graph.trackPrompt(targetId, promptId);
-    } catch (error) {
-      // 提交失败时清掉刚派生出的空节点
-      if (targetId !== props.id) flow.removeNodes([targetId]);
-      throw error;
+    // 等待期间节点可能被删掉，这种情况就不再提交
+    if (!flow.nodes.value.some((node) => node.id === targetId)) {
+      return;
     }
+
+    const promptId = await graph.submitExecution({
+      workflow: props.data.workflow,
+      params,
+      imageRefs,
+    });
+    graph.trackPrompt(targetId, promptId);
   } catch (error) {
+    // 提交/上传失败时清掉等待状态和刚派生出的空节点
+    graph.clearWaiting(targetId);
+    if (targetId !== props.id) {
+      graph.clearUploading(targetId);
+      flow.removeNodes([targetId]);
+    }
     runError.value = error.message || "运行失败";
-  } finally {
-    running.value = false;
   }
 }
 </script>
@@ -1380,6 +1496,29 @@ async function run() {
   pointer-events: none;
 }
 
+/* 视频封面还没生成时的占位块（避免把视频地址塞进 img 显示成裂图） */
+.media-thumb.is-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #23232b, #15151a);
+  pointer-events: none;
+}
+
+.media-placeholder-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--c-text-dim, #8b8b96);
+  font-size: 12px;
+}
+
 /* 非当前视频卡片的播放角标（只显示封面缩略图） */
 .card-play {
   position: absolute;
@@ -1425,6 +1564,37 @@ async function run() {
 .card-delete:hover {
   color: #ff6b6b;
   border-color: #ff6b6b;
+}
+
+/* 上传状态 / 失败重试：盖在卡片底部，不挡拖动和删除按钮 */
+.card-upload {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(12, 12, 16, 0.72);
+  color: var(--c-text);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  cursor: default;
+}
+
+.card-upload.is-error {
+  color: #ff9b9b;
+  cursor: pointer;
+}
+
+.card-upload.is-error:hover {
+  background: rgba(120, 30, 30, 0.72);
 }
 
 /* 底部圆点指示 */
@@ -2264,6 +2434,17 @@ async function run() {
   width: 100%;
   height: 100%;
   font-size: 10px;
+  color: var(--c-muted);
+  background: #222;
+}
+
+/* 视频封面还没生成时的占位块 */
+.strip-thumb-placeholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 14px;
   color: var(--c-muted);
   background: #222;
 }

@@ -184,7 +184,7 @@
               />
               <img
                 v-else-if="previewCard.file.category === 'photo'"
-                :src="thumbUrl(previewCard.file)"
+                :src="thumbUrl(previewCard.file, 640)"
                 @load="fitPreview"
               />
               <div v-else class="preview-bubble-audio">音频</div>
@@ -380,11 +380,13 @@ function markThumbFailed(file) {
 }
 
 // 缩略图只用于网格展示；v= 用源文件的 mtime，源图更新后能拿到新缩略图
-function thumbUrl(file) {
+// size 是后端缩略图最长边档位：网格 320，悬停气泡放大展示用 640
+function thumbUrl(file, size = 320) {
   const params = new URLSearchParams({
     filename: file.filename,
     subfolder: file.subfolder || "",
     type: file.type || kind.value,
+    size: String(size),
     v: String(file.updated || 0),
   });
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;

@@ -135,18 +135,21 @@ if (typeof window !== "undefined") {
 loadWorkflowNames();
 
 // 缩略图地址：后端按 ref 生成并缓存 WebP，只用于节点/面板展示；执行、下载、预览仍用原图
-function mediaThumbUrl(ref) {
+// size 是缩略图最长边档位（320 / 640 / 960），节点卡片会放大，所以默认用 640
+function mediaThumbUrl(ref, size = 640) {
   const params = new URLSearchParams({
     filename: ref.filename || "",
     subfolder: ref.subfolder || "",
     type: ref.type || "input",
+    size: String(size),
   });
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
 }
 
-// 序列化时去掉运行时字段（url / thumbUrl 由 ref 推导，blob 是上传前的临时数据）
+// 序列化时去掉运行时字段（url / thumbUrl 由 ref 推导，file 是上传中的本地文件，
+// pending / error 只代表这一次上传的状态）
 function stripMediaItem(item) {
-  const { url, thumbUrl, blob, ...rest } = item;
+  const { url, thumbUrl, blob, file, pending, error, ...rest } = item;
   return rest;
 }
 
@@ -167,6 +170,11 @@ export function useGraph() {
 
   let nodeSeq = 0;
   let edgeSeq = 0;
+  // 上传中的原始文件（不进 Vue 响应式数据，避免 File 被代理后 FileReader 报错）
+  const pendingFiles = new Map();
+  // 正在进行的上传 id 集合 + 空闲时的回调，运行工作流前用它等待素材就绪
+  const uploadInFlight = new Set();
+  let uploadWaiters = [];
   let connectStart = null;
   // 加载画布时整体替换 nodes/edges，需要让同步/回收的监听跳过这一轮
   let loading = false;
@@ -205,11 +213,51 @@ export function useGraph() {
     return id;
   }
 
-  function readDataUrl(file) {
+  // 单个文件 -> 上传到 ComfyUI input 目录。用 XHR 是为了能感知上传是否还有进展；
+  // 网络差的时候 30 秒没有任何进展就主动中断，交给调用方显示"失败 / 重试"
+  function postMedia(file, kind) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error("读取素材失败"));
+      reader.onerror = () => reject(new Error("读取文件失败"));
+      reader.onload = () => {
+        const name = file.name || (kind === "video" ? "视频" : "图片");
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/infinite_canvas/api/media");
+        xhr.setRequestHeader("Content-Type", "application/json");
+
+        let lastTick = Date.now();
+        // 上传停滞检测：进度事件会刷新 lastTick
+        const watchdog = setInterval(() => {
+          if (Date.now() - lastTick > 30000) xhr.abort();
+        }, 5000);
+        const settle = (fn) => {
+          clearInterval(watchdog);
+          fn();
+        };
+
+        xhr.upload.onprogress = () => {
+          lastTick = Date.now();
+        };
+        xhr.onerror = () => settle(() => reject(new Error("网络中断")));
+        xhr.onabort = () => settle(() => reject(new Error("上传超时")));
+        xhr.ontimeout = () => settle(() => reject(new Error("上传超时")));
+        xhr.onload = () =>
+          settle(() => {
+            let ref = null;
+            try {
+              ref = JSON.parse(xhr.responseText);
+            } catch {
+              ref = null;
+            }
+            if (xhr.status < 200 || xhr.status >= 300 || !ref || !ref.filename) {
+              reject(new Error("上传失败"));
+              return;
+            }
+            resolve(ref);
+          });
+
+        xhr.send(JSON.stringify({ name, data: reader.result }));
+      };
       reader.readAsDataURL(file);
     });
   }
@@ -218,14 +266,7 @@ export function useGraph() {
   async function uploadFile(file, kind) {
     const name = file.name || (kind === "video" ? "视频" : "图片");
     try {
-      const dataUrl = await readDataUrl(file);
-      const response = await fetch("/infinite_canvas/api/media", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, data: dataUrl }),
-      });
-      const ref = await response.json().catch(() => null);
-      if (!response.ok || !ref || !ref.filename) throw new Error();
+      const ref = await postMedia(file, kind);
       return {
         id: newId(),
         name,
@@ -240,19 +281,117 @@ export function useGraph() {
     }
   }
 
-  // 文件 -> 节点内媒体项（会逐个上传）
-  async function toMediaItems(files) {
-    const media = [];
+  // 拖入文件时先建"本地占位"媒体项：立刻用本地预览显示出来，
+  // 再后台补传，卡片上显示进度；失败就停在"失败 / 点击重试"
+  function makePlaceholder(file, kind) {
+    const id = newId();
+    // File 不放媒体项里：媒体项是 Vue 响应式对象，取 File 出来会被代理包一层，
+    // FileReader/XHR 读代理会报 Illegal invocation；原始文件按 id 存在普通 Map 里
+    pendingFiles.set(id, file);
+    return {
+      id,
+      name: file.name || (kind === "video" ? "视频" : "图片"),
+      kind,
+      url: URL.createObjectURL(file),
+      thumbUrl: "",
+      pending: true,
+      error: "",
+    };
+  }
+
+  function filesToPlaceholders(files) {
+    const items = [];
     for (const file of files) {
       let kind = "";
       if (file.type.startsWith("image/")) kind = "image";
       else if (file.type.startsWith("video/")) kind = "video";
       else if (file.type.startsWith("audio/")) kind = "audio";
-      if (!kind) continue;
-      const item = await uploadFile(file, kind);
-      if (item) media.push(item);
+      if (kind) items.push(makePlaceholder(file, kind));
     }
-    return media;
+    return items;
+  }
+
+  // 同一个素材可能被拖到多个节点（各节点持有的是副本），上传落定时要按 id 同步过去，
+  // 否则下游节点的副本会一直停在"上传中"（失败时也一样收不到错误）
+  function syncItemCopies(item) {
+    for (const node of nodes.value) {
+      const all = [...(node.data.media || []), ...(node.data.inputMedia || [])];
+      for (const media of all) {
+        if (media === item || !media || media.id !== item.id) continue;
+        // 副本用的本地预览地址已经用不上了，换掉后回收
+        if (media.url && media.url.startsWith("blob:") && media.url !== item.url) {
+          const stale = media.url;
+          setTimeout(() => URL.revokeObjectURL(stale), 1000);
+        }
+        media.ref = item.ref;
+        media.url = item.url;
+        media.thumbUrl = item.thumbUrl;
+        media.pending = false;
+        media.error = item.error || "";
+      }
+    }
+  }
+
+  async function doUpload(item, file) {
+    try {
+      const ref = await postMedia(file, item.kind);
+      pendingFiles.delete(item.id);
+      const localUrl = item.url;
+      item.ref = { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "input" };
+      item.url = mediaUrl(item.ref);
+      item.thumbUrl = mediaThumbUrl(item.ref);
+      item.pending = false;
+      item.error = "";
+      syncItemCopies(item);
+      // 服务端地址已经换上了，延迟释放本地预览（避免正在播放的视频被立刻打断）
+      if (localUrl && localUrl.startsWith("blob:")) {
+        setTimeout(() => URL.revokeObjectURL(localUrl), 1000);
+      }
+    } catch (err) {
+      item.pending = false;
+      item.error = (err && err.message) || "上传失败";
+      syncItemCopies(item);
+      throw err;
+    }
+  }
+
+  // 上传落定后，唤醒所有不再被它挡住的等待者
+  function flushUploadWaiters() {
+    if (!uploadWaiters.length) return;
+    const rest = [];
+    for (const waiter of uploadWaiters) {
+      if (waiter.ids.some((id) => uploadInFlight.has(id))) rest.push(waiter);
+      else waiter.resolve();
+    }
+    uploadWaiters = rest;
+  }
+
+  function runUpload(item) {
+    const file = pendingFiles.get(item.id);
+    if (!file || uploadInFlight.has(item.id)) return Promise.resolve();
+    uploadInFlight.add(item.id);
+    const task = doUpload(item, file).finally(() => {
+      uploadInFlight.delete(item.id);
+      flushUploadWaiters();
+    });
+    return task;
+  }
+
+  // 运行前等在途上传落定：传 ids 就只等这些素材（含从别的节点复制过来的同 id 副本），
+  // 不传则等全部。这样点运行不用手动等上传，也不会被画布上无关的上传拖住
+  function waitForUploads(ids) {
+    const watching = ids && ids.length ? ids.filter((id) => uploadInFlight.has(id)) : [...uploadInFlight];
+    if (!watching.length) return Promise.resolve();
+    return new Promise((resolve) => uploadWaiters.push({ ids: watching, resolve }));
+  }
+
+  // 失败后点一下卡片重试（原始文件还留在 pendingFiles 里）
+  function retryUpload(item) {
+    if (!item || !pendingFiles.has(item.id) || item.pending) return;
+    if (uploadInFlight.has(item.id)) return;
+    item.pending = true;
+    item.error = "";
+    runUpload(item).catch(() => {});
   }
 
   // 执行结果（后端返回的 /view 引用）-> 媒体项，不需要再下载
@@ -270,8 +409,9 @@ export function useGraph() {
   }
 
   // 一次拖入的多个文件放进同一个节点，节点内用堆叠卡片切换
-  async function addMediaNode(position, files) {
-    const media = await toMediaItems(files);
+  // 先把本地占位塞进节点（立刻可见），上传在后台跑，卡片上显示进度
+  function addMediaNode(position, files) {
+    const media = filesToPlaceholders(files);
     if (!media.length) return null;
 
     nodeSeq += 1;
@@ -292,12 +432,16 @@ export function useGraph() {
         },
       },
     ];
+    // 从 nodes 里取回来的是响应式代理，状态更新才会触发渲染
+    nodes.value
+      .find((node) => node.id === id)
+      ?.data.media.forEach((item) => runUpload(item).catch(() => {}));
     return id;
   }
 
-  // 往已有节点上继续追加素材
-  async function appendMedia(nodeId, files) {
-    const items = await toMediaItems(files);
+  // 往已有节点上继续追加素材（同样先放本地占位，后台补传）
+  function appendMedia(nodeId, files) {
+    const items = filesToPlaceholders(files);
     if (!items.length) return false;
 
     const node = nodes.value.find((item) => item.id === nodeId);
@@ -305,6 +449,7 @@ export function useGraph() {
     const media = node.data.media || [];
     node.data.media = [...media, ...items];
     if (!media.length) node.data.index = 0;
+    node.data.media.slice(media.length).forEach((item) => runUpload(item).catch(() => {}));
     return true;
   }
 
@@ -545,8 +690,13 @@ export function useGraph() {
         position: { x: node.position.x, y: node.position.y },
         data: {
           ...node.data,
-          media: (node.data.media || []).map(stripMediaItem),
-          inputMedia: (node.data.inputMedia || []).map(stripMediaItem),
+          // 还没传完的占位素材没有 ref，存下来也没法还原，直接跳过
+          media: (node.data.media || [])
+            .filter((item) => item && item.ref && item.ref.filename)
+            .map(stripMediaItem),
+          inputMedia: (node.data.inputMedia || [])
+            .filter((item) => item && item.ref && item.ref.filename)
+            .map(stripMediaItem),
         },
       })),
       edges: edges.value.map((edge) => ({
@@ -642,8 +792,9 @@ export function useGraph() {
     const zoom = DEFAULT_VIEWPORT.zoom;
     let id = nodeId;
     if (!id) {
-      const picked = flow.getSelectedNodes && flow.getSelectedNodes();
-      id = picked && picked.length ? picked[0].id : null;
+      // getSelectedNodes 是 computed，取 .value 而不是当函数调用（否则抛 TypeError）
+      const picked = flow.getSelectedNodes?.value || [];
+      id = picked.length ? picked[0].id : null;
     }
     const node = id && flow.findNode ? flow.findNode(id) : null;
     if (!node) {
@@ -793,12 +944,16 @@ export function useGraph() {
           workflow: source.data.workflow || defaultWorkflow(),
           params: JSON.parse(JSON.stringify(source.data.params || {})),
           randomFields: JSON.parse(JSON.stringify(source.data.randomFields || {})),
-          // 素材沿用引用，但 id 要重新生成，避免和原节点在同一目标节点上被去重
-          media: (source.data.media || []).map((item) => ({ ...item, id: newId() })),
+          // 素材沿用引用，但 id 要重新生成，避免和原节点在同一目标节点上被去重；
+          // 还在上传的素材保留原 id，上传落定后按 id 把引用同步到副本
+          media: (source.data.media || []).map((item) => ({
+            ...item,
+            id: item.pending || !item.ref ? item.id : newId(),
+          })),
           index: 0,
           inputMedia: (source.data.inputMedia || []).map((item) => ({
             ...item,
-            id: newId(),
+            id: item.pending || !item.ref ? item.id : newId(),
           })),
         },
       },
@@ -996,6 +1151,50 @@ export function useGraph() {
     finishPrompt(nodeId, promptId, data.images || []);
   }
 
+  // 素材还在上传时，下游节点先以 uploading 状态占位；上传落定后由 trackPrompt 接管
+  function markUploading(nodeId) {
+    runStates[nodeId] = {
+      status: "uploading",
+      error: "",
+      position: 0,
+      promptId: "",
+      startedAt: Date.now(),
+    };
+  }
+
+  function clearUploading(nodeId) {
+    if (runStates[nodeId]?.status === "uploading") delete runStates[nodeId];
+  }
+
+  // 节点是否还在活动：上传素材 / 等上游 / 排队 / 运行 / 刚完成还没同步下游
+  const ACTIVE_STATUSES = new Set(["uploading", "waiting", "queued", "running", "done"]);
+
+  function nodeBusy(nodeId) {
+    const state = runStates[nodeId];
+    if (state && ACTIVE_STATUSES.has(state.status)) return true;
+    const node = nodes.value.find((item) => item.id === nodeId);
+    if (!node) return false;
+    // 没有运行状态但素材还在传，也算没准备好
+    return [...(node.data.media || []), ...(node.data.inputMedia || [])].some(
+      (item) => item && item.pending && uploadInFlight.has(item.id)
+    );
+  }
+
+  // 上游还在活动时，下游节点先以 waiting 状态占位，上游结束后再提交
+  function markWaiting(nodeId) {
+    runStates[nodeId] = {
+      status: "waiting",
+      error: "",
+      position: 0,
+      promptId: "",
+      startedAt: Date.now(),
+    };
+  }
+
+  function clearWaiting(nodeId) {
+    if (runStates[nodeId]?.status === "waiting") delete runStates[nodeId];
+  }
+
   // 提交成功后先按"排队中"接管，第一次查询会立刻纠正成运行中
   function trackPrompt(nodeId, promptId) {
     promptNodes.set(promptId, nodeId);
@@ -1133,8 +1332,9 @@ export function useGraph() {
         data: {
           ...baseData(`${nodeSeq}`),
           workflow: source.data.workflow || defaultWorkflow(),
-          // 素材是复制出来的，id 重新生成，避免和源节点在同一上游上被去重
-          media: [{ ...item, id: newId() }],
+          // 素材是复制出来的，id 重新生成，避免和源节点在同一上游上被去重；
+          // 还在上传的素材保留原 id，等它上传完再按 id 同步引用
+          media: [{ ...item, id: item.pending || !item.ref ? item.id : newId() }],
           index: 0,
         },
       },
@@ -1186,6 +1386,13 @@ export function useGraph() {
     spawnItemsNodeAt,
     itemsFromRefs,
     uploadAsset,
+    retryUpload,
+    waitForUploads,
+    markUploading,
+    clearUploading,
+    markWaiting,
+    clearWaiting,
+    nodeBusy,
     replaceMediaItem,
     spawnDetachedNode,
     exportCanvas,

@@ -286,6 +286,8 @@ def _list_assets(kind):
 # 拖出画布时前端仍然用原图引用（/view），缩略图只影响面板里的展示。
 
 _THUMB_SIZE = 320
+# 允许的缩略图档位：资产库网格用 320，节点卡片放大后要更清晰就用 640/960
+_THUMB_SIZES = (320, 640, 960)
 _THUMB_QUALITY = 72
 _THUMB_MAX_BYTES = 200 * 1024 * 1024
 _THUMB_MAX_FILES = 10000
@@ -301,8 +303,8 @@ def _thumb_hash(real_path):
     return hashlib.md5(real_path.encode("utf-8")).hexdigest()[:16]
 
 
-def _thumb_file(real_path, mtime, size):
-    name = f"{_thumb_hash(real_path)}__{int(mtime)}__{int(size)}.webp"
+def _thumb_file(real_path, mtime, size, max_side=_THUMB_SIZE):
+    name = f"{_thumb_hash(real_path)}__{int(mtime)}__{int(size)}__{int(max_side)}.webp"
     return os.path.join(_thumb_dir(), name)
 
 
@@ -348,15 +350,15 @@ def _video_frame(src_path):
     return None
 
 
-def _encode_thumb(img, dest_path):
+def _encode_thumb(img, dest_path, max_side=_THUMB_SIZE):
     from PIL import Image
 
-    img.thumbnail((_THUMB_SIZE, _THUMB_SIZE), Image.LANCZOS)
+    img.thumbnail((max_side, max_side), Image.LANCZOS)
     img.save(dest_path, format="WEBP", quality=_THUMB_QUALITY, method=4)
 
 
-def _build_thumb(src_path, dest_path):
-    """最长边缩到 _THUMB_SIZE，先写临时文件再原子替换；视频取一帧当封面"""
+def _build_thumb(src_path, dest_path, max_side=_THUMB_SIZE):
+    """最长边缩到 max_side，先写临时文件再原子替换；视频取一帧当封面"""
     from PIL import Image, ImageOps
 
     cache_dir = os.path.dirname(dest_path)
@@ -368,10 +370,10 @@ def _build_thumb(src_path, dest_path):
             frame = _video_frame(src_path)
             if frame is None:
                 raise RuntimeError("读不到视频帧（需要 PyAV 或 OpenCV）")
-            _encode_thumb(frame.convert("RGB"), tmp_path)
+            _encode_thumb(frame.convert("RGB"), tmp_path, max_side)
         else:
             with Image.open(src_path) as raw:
-                _encode_thumb(ImageOps.exif_transpose(raw).convert("RGB"), tmp_path)
+                _encode_thumb(ImageOps.exif_transpose(raw).convert("RGB"), tmp_path, max_side)
         os.replace(tmp_path, dest_path)
         tmp_path = None
     finally:
@@ -436,6 +438,49 @@ def _asset_path(kind, subfolder, filename):
     if not path.startswith(real_root + os.sep):
         return None
     return path if os.path.isfile(path) else None
+
+
+def _read_embedded_json(path):
+    """读取文件里内嵌的 ComfyUI 工作流（PNG/WebP 元数据优先，视频容器尽力而为）"""
+    result = {"workflow": None, "prompt": None}
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            info = dict(img.info or {})
+        for key in ("workflow", "prompt"):
+            raw = info.get(key)
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    result[key] = json.loads(raw)
+                except ValueError:
+                    continue
+        if result["workflow"] or result["prompt"]:
+            return result
+    except Exception:
+        # 不是图片（视频/音频）或读不了元数据，继续尝试容器 metadata
+        pass
+
+    # 图片之外（视频/音频）尝试从容器 metadata 里找；没装 PyAV 或没元数据就返回空
+    try:
+        import av
+
+        with av.open(path) as container:
+            meta = dict(container.metadata or {})
+        for key in ("workflow", "prompt", "comment"):
+            raw = meta.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            target = "workflow" if key == "workflow" else "prompt"
+            if result[target] is None:
+                result[target] = data
+    except Exception:
+        pass
+    return result
 
 
 def _read_workflow(name):
@@ -986,6 +1031,9 @@ def register_routes(app):
         if category not in ("all", "photo", "video", "audio"):
             category = "all"
 
+        # 关键字搜索：文件名 / 子目录，不区分大小写
+        keyword = str(request.query.get("q", "") or "").strip().lower()
+
         try:
             offset = int(request.query.get("offset", 0) or 0)
         except (TypeError, ValueError):
@@ -1000,6 +1048,12 @@ def register_routes(app):
         files = _list_assets(kind)
         if category != "all":
             files = [item for item in files if item["category"] == category]
+        if keyword:
+            files = [
+                item
+                for item in files
+                if keyword in item["filename"].lower() or keyword in item["subfolder"].lower()
+            ]
         return web.json_response(
             {
                 "type": kind,
@@ -1035,10 +1089,17 @@ def register_routes(app):
         except OSError:
             return web.json_response({"error": "读取素材失败"}, status=404)
 
-        cache_file = _thumb_file(real_path, stat.st_mtime, stat.st_size)
+        # 尺寸档位：只接受 320 / 640 / 960，避免被拿来做任意尺寸的图片服务
+        try:
+            wanted = int(request.query.get("size", _THUMB_SIZE))
+        except (TypeError, ValueError):
+            wanted = _THUMB_SIZE
+        max_side = min(_THUMB_SIZES, key=lambda s: abs(s - wanted))
+
+        cache_file = _thumb_file(real_path, stat.st_mtime, stat.st_size, max_side)
         if not os.path.isfile(cache_file):
             try:
-                await asyncio.to_thread(_build_thumb, real_path, cache_file)
+                await asyncio.to_thread(_build_thumb, real_path, cache_file, max_side)
             except Exception as exc:
                 print(f"[Infinite-Canvas] 生成缩略图失败 {real_path}: {exc}")
                 return web.json_response({"error": "生成缩略图失败"}, status=500)
@@ -1052,8 +1113,43 @@ def register_routes(app):
             },
         )
 
-    async def list_prompts(request):
-        return web.json_response({"prompts": _load_prompt_library()})
+    async def asset_meta(request):
+        """素材内嵌的 ComfyUI 工作流（PNG/WebP 里的 workflow / prompt 元数据）"""
+        kind = str(request.query.get("type", "input") or "input")
+        if kind not in ("input", "output"):
+            return web.json_response({"error": "type 只支持 input / output"}, status=400)
+        filename = request.query.get("filename", "")
+        subfolder = request.query.get("subfolder", "")
+        path = _asset_path(kind, subfolder, filename)
+        if not path:
+            return web.json_response({"error": "素材不存在"}, status=404)
+        data = await asyncio.to_thread(_read_embedded_json, path)
+        return web.json_response(data)
+
+    async def delete_assets(request):
+        """资产库批量删除：按 type/subfolder/filename 定位，限制在 input/output 目录内"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+
+        removed = 0
+        refs = payload.get("refs") if isinstance(payload, dict) else None
+        for item in refs if isinstance(refs, list) else []:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("type") or "input")
+            if kind not in ("input", "output"):
+                continue
+            path = _asset_path(kind, str(item.get("subfolder") or ""), str(item.get("filename") or ""))
+            if not path:
+                continue
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                continue
+        return web.json_response({"removed": removed})
 
     async def add_prompt(request):
         try:
@@ -1422,6 +1518,8 @@ def register_routes(app):
             web.put(f"{API_PREFIX}/workflows/order", reorder_workflows),
             web.get(f"{API_PREFIX}/library/assets", list_assets),
             web.get(f"{API_PREFIX}/library/thumb", asset_thumb),
+            web.get(f"{API_PREFIX}/library/meta", asset_meta),
+            web.post(f"{API_PREFIX}/library/delete", delete_assets),
             web.get(f"{API_PREFIX}/library/prompts", list_prompts),
             web.post(f"{API_PREFIX}/library/prompts", add_prompt),
             web.delete(f"{API_PREFIX}/library/prompts/{{entry_id}}", delete_prompt),
