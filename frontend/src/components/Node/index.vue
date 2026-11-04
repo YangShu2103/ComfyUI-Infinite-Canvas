@@ -913,6 +913,8 @@ const targetConnected = computed(() => flow.edges.value.some((e) => e.target ===
 
 // 删除第 i 张自身素材；素材存在 ComfyUI input 目录时顺带删掉文件
 function removeMediaAt(i) {
+  // 删除后鼠标可能停在原地不再触发 mouseleave，悬停预览气泡要主动关掉
+  closePreview();
   const list = props.data.media || [];
   if (!list[i]) return;
 
@@ -2405,8 +2407,8 @@ async function run() {
 
 .panel-dice {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border: 1px solid var(--c-line);
