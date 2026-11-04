@@ -144,26 +144,9 @@
           <p v-else-if="!hasMore" class="am-hint">已加载全部 {{ total }} 个</p>
         </section>
 
-        <!-- 右侧：上预览，下工作流 JSON -->
+        <!-- 右侧：上方预览（操作图标浮在右上角），下方提示词 -->
         <aside class="am-right">
           <section class="am-preview">
-            <header class="am-preview-head">
-              <span class="am-preview-title" :title="activeFile?.filename">
-                {{ activeFile ? activeFile.filename : "文件预览" }}
-              </span>
-              <div v-if="activeFile" class="am-preview-tools">
-                <button type="button" title="下载" @click="downloadOne(activeFile)">下载</button>
-                <button
-                  class="is-danger"
-                  type="button"
-                  title="删除"
-                  @click="removeFiles([activeFile])"
-                >
-                  删除
-                </button>
-              </div>
-            </header>
-
             <div class="am-preview-body">
               <template v-if="activeFile">
                 <video
@@ -178,25 +161,64 @@
                   controls
                 />
                 <img v-else :src="assetUrl(activeFile)" :alt="activeFile.filename" />
+
+                <!-- 下载 / 删除：浮在预览区右上角 -->
+                <div class="am-preview-tools">
+                  <button type="button" title="下载" @click="downloadOne(activeFile)">
+                    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+                      <path
+                        d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    class="is-danger"
+                    type="button"
+                    title="删除"
+                    @click="removeFiles([activeFile])"
+                  >
+                    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+                      <path
+                        d="M4 7h16M9 7V5h6v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M10 11v6M14 11v6"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </template>
               <p v-else class="am-hint">点击中间素材查看预览</p>
             </div>
 
+            <!-- 文件名与信息放在预览下方 -->
             <footer v-if="activeFile" class="am-preview-meta">
-              {{ activeFile.subfolder || "根目录" }} · {{ kind }} ·
-              {{ formatSize(activeFile.size) }} ·
-              {{ formatTime(activeFile.updated) }}
+              <span class="am-preview-name" :title="activeFile.filename">
+                {{ activeFile.filename }}
+              </span>
+              <span class="am-preview-sub">
+                {{ activeFile.subfolder || "根目录" }} · {{ kind }} ·
+                {{ formatSize(activeFile.size) }} ·
+                {{ formatTime(activeFile.updated) }}
+              </span>
             </footer>
           </section>
 
-          <section class="am-json">
-            <header class="am-json-head">
-              <span>工作流 JSON</span>
-              <button v-if="workflowJson" type="button" @click="copyJson">复制</button>
+          <section class="am-prompt">
+            <header class="am-prompt-head">
+              <span>提示词</span>
+              <button v-if="promptText" type="button" @click="copyPrompt">复制</button>
             </header>
-            <pre v-if="workflowJson" class="am-json-body">{{ workflowJson }}</pre>
+            <div v-if="promptText" class="am-prompt-body">{{ promptText }}</div>
             <p v-else class="am-hint">
-              {{ metaLoading ? "读取中…" : activeFile ? "这个文件没有内嵌工作流" : "先选择一个素材" }}
+              {{ metaLoading ? "读取中…" : activeFile ? "这个文件没有提示词信息" : "先选择一个素材" }}
             </p>
           </section>
         </aside>
@@ -247,10 +269,8 @@ const activeFile = ref(null);
 const activeKey = computed(() => (activeFile.value ? assetKey(activeFile.value) : ""));
 const metaData = ref(null);
 const metaLoading = ref(false);
-const workflowJson = computed(() => {
-  const data = metaData.value?.workflow || metaData.value?.prompt;
-  return data ? JSON.stringify(data, null, 2) : "";
-});
+// 后端已从内嵌工作流里挑出「提示词」节点，前端直接展示原文
+const promptText = computed(() => metaData.value?.prompt_text || "");
 
 // 选中集合用 Set，改动后整体替换才能触发响应式更新
 const selected = ref(new Set());
@@ -512,6 +532,8 @@ function downloadSelected() {
 }
 
 async function selectFile(file) {
+  // 批量管理时，点整块预览就等于勾选，不必精确点左上角的小框
+  if (batch.value) toggleSelect(file);
   activeFile.value = file;
   metaData.value = null;
   metaLoading.value = true;
@@ -534,11 +556,11 @@ async function selectFile(file) {
   }
 }
 
-async function copyJson() {
-  if (!workflowJson.value) return;
+async function copyPrompt() {
+  if (!promptText.value) return;
   try {
-    await navigator.clipboard.writeText(workflowJson.value);
-    toast("工作流 JSON 已复制");
+    await navigator.clipboard.writeText(promptText.value);
+    toast("提示词已复制");
   } catch {
     toast("复制失败");
   }
@@ -822,14 +844,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+/* 正在预览：中性描边；批量勾选：黄色描边，和画布管理保持一致 */
 .am-cell.is-active {
-  border-color: var(--c-accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-accent) 40%, transparent);
+  border-color: color-mix(in srgb, var(--c-text) 45%, transparent);
 }
 
 .am-cell.is-selected {
-  border-color: #6fa8ff;
-  box-shadow: 0 0 0 1px rgba(111, 168, 255, 0.4);
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent);
 }
 
 .am-cell > img,
@@ -881,17 +903,46 @@ onBeforeUnmount(() => {
   top: 6px;
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   background: rgba(16, 16, 20, 0.75);
 }
 
+/* 和画布管理的选择框同一套：黄色实心 + 勾 */
 .am-check input {
-  width: 13px;
-  height: 13px;
+  position: relative;
+  width: 14px;
+  height: 14px;
   margin: 0;
-  accent-color: var(--c-accent);
+  border: 1px solid #3c3c48;
+  border-radius: 4px;
+  background: #0f0f13;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.am-check input:hover {
+  border-color: #5a5a68;
+}
+
+.am-check input:checked {
+  border-color: var(--c-accent);
+  background: var(--c-accent);
+}
+
+.am-check input:checked::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  width: 5px;
+  height: 8px;
+  border: solid #16160f;
+  border-width: 0 2px 2px 0;
+  transform: rotate(42deg);
 }
 
 /* 右侧：预览 + 工作流 JSON */
@@ -912,43 +963,39 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
 }
 
-.am-preview-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 8px;
-}
-
-.am-preview-title {
-  flex: 1 1 auto;
-  overflow: hidden;
-  color: var(--c-text);
-  font-size: 12px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 .am-preview-tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
   display: flex;
   gap: 6px;
 }
 
 .am-preview-tools button {
-  padding: 3px 8px;
-  border: 1px solid var(--c-line);
-  border-radius: 6px;
-  background: var(--c-input-bg);
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(16, 16, 20, 0.72);
   color: var(--c-text);
-  font-size: 11px;
   cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.am-preview-tools button:hover {
+  background: rgba(32, 32, 40, 0.9);
 }
 
 .am-preview-tools button.is-danger {
-  border-color: #5a3038;
+  border-color: rgba(255, 143, 143, 0.35);
   color: #ff8f8f;
 }
 
 .am-preview-body {
+  position: relative;
   flex: 1 1 auto;
   display: grid;
   place-items: center;
@@ -969,8 +1016,23 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
+/* 文件名叠在预览下方，信息再下一行 */
 .am-preview-meta {
-  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 10px;
+}
+
+.am-preview-name {
+  overflow: hidden;
+  color: var(--c-text);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.am-preview-sub {
   overflow: hidden;
   color: var(--c-muted);
   font-size: 11px;
@@ -978,7 +1040,7 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.am-json {
+.am-prompt {
   flex: 1 1 42%;
   display: flex;
   flex-direction: column;
@@ -987,7 +1049,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--c-line);
 }
 
-.am-json-head {
+.am-prompt-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -996,7 +1058,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.am-json-head button {
+.am-prompt-head button {
   padding: 3px 8px;
   border: 1px solid var(--c-line);
   border-radius: 6px;
@@ -1006,20 +1068,19 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.am-json-body {
+.am-prompt-body {
   flex: 1 1 auto;
   min-height: 0;
-  margin: 0;
   padding: 10px;
   overflow: auto;
   border-radius: 10px;
   background: #101013;
-  color: #b8d8ff;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1.55;
+  color: var(--c-text);
+  font-size: 12px;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
 }
 
 .am-hint {
@@ -1032,7 +1093,7 @@ onBeforeUnmount(() => {
 
 /* 右侧空态时别被网格的 grid-column 规则影响 */
 .am-preview-body .am-hint,
-.am-json .am-hint {
+.am-prompt .am-hint {
   grid-column: auto;
 }
 

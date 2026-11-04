@@ -483,6 +483,71 @@ def _read_embedded_json(path):
     return result
 
 
+# 素材内嵌工作流里「提示词」节点的标题（人为命名，中英文都兼容）
+_PROMPT_TITLES = ("提示词", "正向提示词", "prompt", "positive")
+# 没有标题时按节点类型兜底：文本节点 / 正向编码节点
+_PROMPT_TYPES = (
+    "PrimitiveStringMultiline",
+    "PrimitiveString",
+    "CLIPTextEncode",
+    "TextEncodeQwenImage21",
+)
+
+
+def _first_text(container):
+    """从控件值 / 输入里挑第一个非空字符串"""
+    if isinstance(container, dict):
+        for key in ("value", "text", "prompt", "string"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+    if isinstance(container, list):
+        for value in container:
+            if isinstance(value, str) and value.strip():
+                return value
+    return ""
+
+
+def _extract_prompt_text(data):
+    """从 UI 或 API 格式的工作流里提取提示词节点的文本"""
+    if not isinstance(data, dict):
+        return ""
+
+    fallback = ""
+    # UI 格式：{nodes: [{type, title, widgets_values, widgets_values_named}]}
+    if isinstance(data.get("nodes"), list):
+        for node in data["nodes"]:
+            if not isinstance(node, dict):
+                continue
+            text = _first_text(node.get("widgets_values_named")) or _first_text(
+                node.get("widgets_values")
+            )
+            if not text:
+                continue
+            title = str(node.get("title") or "").strip().lower()
+            if any(key in title for key in _PROMPT_TITLES):
+                return text
+            if not fallback and node.get("type") in _PROMPT_TYPES:
+                fallback = text
+        return fallback
+
+    # API 格式：{node_id: {class_type, inputs, _meta:{title}}}
+    for node in data.values():
+        if not isinstance(node, dict):
+            continue
+        text = _first_text(node.get("inputs"))
+        if not text:
+            continue
+        meta = node.get("_meta")
+        title = str((meta or {}).get("title") or "").strip().lower() if isinstance(meta, dict) else ""
+        if any(key in title for key in _PROMPT_TITLES):
+            return text
+        if not fallback and node.get("class_type") in _PROMPT_TYPES:
+            fallback = text
+    return fallback
+
+
 def _read_workflow(name):
     """读取工作流 JSON，不存在或解析失败返回 None"""
     path = _workflow_path(name)
@@ -1123,7 +1188,10 @@ def register_routes(app):
         path = _asset_path(kind, subfolder, filename)
         if not path:
             return web.json_response({"error": "素材不存在"}, status=404)
-        data = await asyncio.to_thread(_read_embedded_json, path)
+        data = dict(await asyncio.to_thread(_read_embedded_json, path) or {})
+        # 前端右下角直接展示原文，所以顺手把「提示词」节点里的文本挑出来
+        source = data.get("workflow") or data.get("prompt")
+        data["prompt_text"] = _extract_prompt_text(source)
         return web.json_response(data)
 
     async def delete_assets(request):
