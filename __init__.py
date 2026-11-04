@@ -1151,6 +1151,9 @@ def register_routes(app):
                 continue
         return web.json_response({"removed": removed})
 
+    async def list_prompts(request):
+        return web.json_response({"prompts": _load_prompt_library()})
+
     async def add_prompt(request):
         try:
             payload = await request.json()
