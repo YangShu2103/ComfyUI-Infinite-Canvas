@@ -892,40 +892,7 @@ export function useGraph() {
 
   // ------------------------------------------------------------ 节点复制
   // 按住 Alt / Option 拖动节点时会拖出一个虚拟副本，松手处才落成真实的兄弟节点，
-  // 原节点不动；工作流、参数（提示词除外）、上游连线和素材一起复制
-
-  const fieldCache = new Map();
-
-  function workflowFields(name) {
-    if (!name) return Promise.resolve([]);
-    if (fieldCache.has(name)) return Promise.resolve(fieldCache.get(name));
-    return fetch(`/infinite_canvas/api/workflows/${encodeURIComponent(name)}/fields`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        const fields = Array.isArray(data?.fields) ? data.fields : [];
-        fieldCache.set(name, fields);
-        return fields;
-      })
-      .catch(() => {
-        fieldCache.set(name, []);
-        return [];
-      });
-  }
-
-  // 节点上的提示词 = 第一个文本类字段，复制时把它清掉（回落到字段默认值）
-  async function clearPrompt(nodeId, workflow) {
-    const fields = await workflowFields(workflow);
-    const prompt = fields.find(
-      (field) => field.type === "textarea" || field.type === "text"
-    );
-    if (!prompt) return;
-    const node = nodes.value.find((item) => item.id === nodeId);
-    const holder = node?.data?.params?.[prompt.nodeId];
-    if (!holder || !(prompt.key in holder)) return;
-    const next = { ...holder };
-    delete next[prompt.key];
-    node.data.params = { ...node.data.params, [prompt.nodeId]: next };
-  }
+  // 原节点不动；工作流、参数（含提示词）、上游连线和素材一起复制
 
   function duplicateNode(sourceId, position) {
     const source = nodes.value.find((item) => item.id === sourceId);
@@ -964,7 +931,6 @@ export function useGraph() {
       addEdge(edge.source, edge.sourceHandle, id, edge.targetHandle);
     }
 
-    clearPrompt(id, source.data.workflow);
     return id;
   }
 

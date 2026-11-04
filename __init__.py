@@ -492,6 +492,37 @@ _PROMPT_TYPES = (
     "CLIPTextEncode",
     "TextEncodeQwenImage21",
 )
+# 这些节点里的字符串是文档或预览内容，不是提示词
+_SKIP_TYPES = ("ShowText", "PreviewAny", "PreviewText", "StringPreview")
+# 命名控件里明确是提示词的键：子图实例、多模态模型节点会把提示词存在这里，
+# 即使是个「机器人跳舞」这种很短的中文也能直接认出来
+_PROMPT_KEYS = ("prompt", "text", "positive", "caption", "description", "提示词", "正向提示词")
+# 文件名 / 链接这类值不可能是提示词
+_NOT_PROMPT_RE = re.compile(
+    r"^(?:https?://|\S+\.(?:safetensors|ckpt|pt|pth|bin|onnx|png|jpe?g|webp|gif|mp4|webm|mp3|wav|json))$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_prompt(text):
+    """粗略判断一段控件值是不是自然语言提示词"""
+    value = text.strip()
+    if len(value) < 40:
+        return False
+    if _NOT_PROMPT_RE.match(value):
+        return False
+    return " " in value
+
+
+def _prompt_value(mapping):
+    """按提示词键名从命名控件值 / 节点 inputs 里取值"""
+    if not isinstance(mapping, dict):
+        return ""
+    for key in _PROMPT_KEYS:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def _first_text(container):
@@ -515,37 +546,55 @@ def _extract_prompt_text(data):
         return ""
 
     fallback = ""
+    # 命名控件里键名就是提示词的（子图实例 / 多模态节点），优先级仅次于标题命中
+    named_hit = ""
+    # 有些工作流（比如子图封装）没有标题为「提示词」的节点，提示词只是子图实例
+    # 上的一个控件值，这时退而取最长的自然语言字符串
+    longest = ""
     # UI 格式：{nodes: [{type, title, widgets_values, widgets_values_named}]}
     if isinstance(data.get("nodes"), list):
         for node in data["nodes"]:
             if not isinstance(node, dict):
                 continue
-            text = _first_text(node.get("widgets_values_named")) or _first_text(
-                node.get("widgets_values")
-            )
+            ntype = str(node.get("type") or "")
+            # 说明类的备注节点里是一大段文档，不能当成提示词
+            if "Note" in ntype or ntype in _SKIP_TYPES:
+                continue
+            named = _prompt_value(node.get("widgets_values_named"))
+            text = named or _first_text(node.get("widgets_values"))
             if not text:
                 continue
             title = str(node.get("title") or "").strip().lower()
             if any(key in title for key in _PROMPT_TITLES):
                 return text
-            if not fallback and node.get("type") in _PROMPT_TYPES:
+            if named and not named_hit:
+                named_hit = named
+            if not fallback and ntype in _PROMPT_TYPES:
                 fallback = text
-        return fallback
+            if _looks_like_prompt(text) and len(text) > len(longest):
+                longest = text
+        return named_hit or fallback or longest
 
     # API 格式：{node_id: {class_type, inputs, _meta:{title}}}
     for node in data.values():
         if not isinstance(node, dict):
             continue
-        text = _first_text(node.get("inputs"))
+        inputs = node.get("inputs")
+        named = _prompt_value(inputs)
+        text = named or _first_text(inputs)
         if not text:
             continue
         meta = node.get("_meta")
         title = str((meta or {}).get("title") or "").strip().lower() if isinstance(meta, dict) else ""
         if any(key in title for key in _PROMPT_TITLES):
             return text
+        if named and not named_hit:
+            named_hit = named
         if not fallback and node.get("class_type") in _PROMPT_TYPES:
             fallback = text
-    return fallback
+        if _looks_like_prompt(text) and len(text) > len(longest):
+            longest = text
+    return named_hit or fallback or longest
 
 
 def _read_workflow(name):

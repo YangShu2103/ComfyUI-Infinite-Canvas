@@ -1111,38 +1111,49 @@ async function loadWorkflowNames() {
   revealActiveWorkflow();
 }
 
-function pickWorkflow(name) {
-  // 换工作流后旧参数可能对不上新字段，直接清空
-  if (name !== props.data.workflow) {
-    props.data.params = {};
-    promptDraft.value = "";
+async function pickWorkflow(name) {
+  if (name === props.data.workflow) {
+    runError.value = "";
+    loadFields();
+    return;
   }
+  // 换工作流后旧参数可能对不上新字段，清空参数，但提示词要带过去。
+  // 字段先拉回来再一次性切换，避免中途出现"清空 → 赋值"的闪动
+  const kept = promptText();
+  const nextFields = await fetchFields(name);
+  fields.value = nextFields;
+  props.data.params = {};
   props.data.workflow = name;
   runError.value = "";
-  loadFields();
+  promptDraft.value = kept;
+  const prompt = nextFields.find(
+    (field) => field.type === "textarea" || field.type === "text"
+  );
+  if (kept && prompt) setValue(prompt, kept);
 }
 
 // 当前工作流暴露给画布的字段（定义在工作流配置里）
 const fields = ref([]);
 
-async function loadFields() {
-  const name = props.data.workflow;
-  if (!name) {
-    fields.value = [];
-    return;
-  }
+// 取某个工作流的字段定义，不改动当前节点状态
+async function fetchFields(name) {
+  if (!name) return [];
   try {
     const response = await fetch(
       `/infinite_canvas/api/workflows/${encodeURIComponent(name)}/fields`
     );
     const data = await response.json();
-    fields.value = (data.fields || []).map((field) => ({
+    return (data.fields || []).map((field) => ({
       ...field,
       id: `${field.nodeId}.${field.key}`,
     }));
   } catch {
-    fields.value = [];
+    return [];
   }
+}
+
+async function loadFields() {
+  fields.value = await fetchFields(props.data.workflow);
 }
 
 // 参数值存在节点自己的 data.params 里，没填过就落回工作流里的默认值
