@@ -556,14 +556,43 @@ async function selectFile(file) {
   }
 }
 
-async function copyPrompt() {
-  if (!promptText.value) return;
+// 页面嵌在 ComfyUI 的 iframe 里时，navigator.clipboard 常被权限策略拦掉，
+// 这里退回隐藏 textarea + execCommand 的老办法
+function fallbackCopy(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "-9999px";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, area.value.length);
+  let ok = false;
   try {
-    await navigator.clipboard.writeText(promptText.value);
-    toast("提示词已复制");
+    ok = document.execCommand("copy");
   } catch {
-    toast("复制失败");
+    ok = false;
   }
+  area.remove();
+  return ok;
+}
+
+async function copyPrompt() {
+  const text = promptText.value;
+  if (!text) return;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("提示词已复制");
+      return;
+    } catch {
+      // 落到下面的兜底
+    }
+  }
+  if (fallbackCopy(text)) toast("提示词已复制");
+  else toast("复制失败");
 }
 
 function close() {
