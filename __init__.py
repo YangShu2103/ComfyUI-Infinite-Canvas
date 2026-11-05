@@ -303,8 +303,8 @@ def _thumb_hash(real_path):
     return hashlib.md5(real_path.encode("utf-8")).hexdigest()[:16]
 
 
-def _thumb_file(real_path, mtime, size, max_side=_THUMB_SIZE):
-    name = f"{_thumb_hash(real_path)}__{int(mtime)}__{int(size)}__{int(max_side)}.webp"
+def _thumb_file(real_path, stamp, size, max_side=_THUMB_SIZE):
+    name = f"{_thumb_hash(real_path)}__{int(stamp)}__{int(size)}__{int(max_side)}.webp"
     return os.path.join(_thumb_dir(), name)
 
 
@@ -864,15 +864,23 @@ def _dir_for_type(source_type):
 def _link_into_input(filename, subfolder="", source_type="output"):
     """把 output/temp 里的文件接到 input 目录下（不复制：优先硬链接，失败再复制）
 
-    目标文件名按来源做哈希，重复引用同一个文件不会产生多份副本。
+    目标文件名按「来源路径 + 文件 mtime + 大小」做哈希：同一个文件名被重新生成
+    （比如输出目录里删掉 ComfyUI_Qwen2.1_00757_.png 后又生成了同名新图）时，
+    会得到新的链接文件，不会复用上一次的旧内容。
     """
     if not filename:
         return ""
     source = os.path.join(_dir_for_type(source_type), subfolder or "", filename)
     if not os.path.isfile(source):
         return ""
+    try:
+        stat = os.stat(source)
+    except OSError:
+        return ""
 
-    digest = hashlib.sha1(f"{source_type}/{subfolder}/{filename}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha1(
+        f"{source_type}/{subfolder}/{filename}/{stat.st_mtime_ns}/{stat.st_size}".encode("utf-8")
+    ).hexdigest()[:16]
     ext = os.path.splitext(filename)[1] or ".png"
     target_name = f"infinite_canvas_{digest}{ext}"
     target = os.path.join(_input_dir(), target_name)
@@ -1210,7 +1218,8 @@ def register_routes(app):
             wanted = _THUMB_SIZE
         max_side = min(_THUMB_SIZES, key=lambda s: abs(s - wanted))
 
-        cache_file = _thumb_file(real_path, stat.st_mtime, stat.st_size, max_side)
+        # 用纳秒级 mtime：同名文件被重新生成时，秒级时间戳可能撞车导致拿到旧缩略图
+        cache_file = _thumb_file(real_path, stat.st_mtime_ns, stat.st_size, max_side)
         if not os.path.isfile(cache_file):
             try:
                 await asyncio.to_thread(_build_thumb, real_path, cache_file, max_side)

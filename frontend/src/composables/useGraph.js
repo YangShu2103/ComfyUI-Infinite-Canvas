@@ -136,13 +136,15 @@ loadWorkflowNames();
 
 // 缩略图地址：后端按 ref 生成并缓存 WebP，只用于节点/面板展示；执行、下载、预览仍用原图
 // size 是缩略图最长边档位（320 / 640 / 960），节点卡片会放大，所以默认用 640
-function mediaThumbUrl(ref, size = 640) {
+// version 是缓存标识：同名文件被重新生成时 filename 不变，靠它让浏览器换掉旧缩略图
+function mediaThumbUrl(ref, size = 640, version = "") {
   const params = new URLSearchParams({
     filename: ref.filename || "",
     subfolder: ref.subfolder || "",
     type: ref.type || "input",
     size: String(size),
   });
+  if (version) params.set("v", String(version));
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
 }
 
@@ -157,7 +159,7 @@ function stripMediaItem(item) {
 function hydrateMediaItem(item) {
   if (!item) return item;
   if (!item.ref || !item.ref.filename) return item;
-  return { ...item, url: mediaUrl(item.ref), thumbUrl: mediaThumbUrl(item.ref) };
+  return { ...item, url: mediaUrl(item.ref), thumbUrl: mediaThumbUrl(item.ref, 640, item.id) };
 }
 
 export function useGraph() {
@@ -267,13 +269,14 @@ export function useGraph() {
     const name = file.name || (kind === "video" ? "视频" : "图片");
     try {
       const ref = await postMedia(file, kind);
+      const itemId = newId();
       return {
-        id: newId(),
+        id: itemId,
         name,
         kind,
         ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "input" },
         url: mediaUrl(ref),
-        thumbUrl: mediaThumbUrl(ref),
+        thumbUrl: mediaThumbUrl(ref, 640, itemId),
       };
     } catch {
       // 接口不可用时退回本地预览（刷新后失效，但界面仍可用）
@@ -339,7 +342,7 @@ export function useGraph() {
       const localUrl = item.url;
       item.ref = { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "input" };
       item.url = mediaUrl(item.ref);
-      item.thumbUrl = mediaThumbUrl(item.ref);
+      item.thumbUrl = mediaThumbUrl(item.ref, 640, item.id);
       item.pending = false;
       item.error = "";
       syncItemCopies(item);
@@ -398,14 +401,17 @@ export function useGraph() {
   function itemsFromRefs(refs) {
     return (refs || [])
       .filter((ref) => ref && ref.filename)
-      .map((ref) => ({
-        id: newId(),
-        name: ref.name || ref.filename,
-        kind: ref.kind || guessKind(ref.filename),
-        ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "output" },
-        url: mediaUrl(ref),
-        thumbUrl: mediaThumbUrl(ref),
-      }));
+      .map((ref) => {
+        const itemId = newId();
+        return {
+          id: itemId,
+          name: ref.name || ref.filename,
+          kind: ref.kind || guessKind(ref.filename),
+          ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "output" },
+          url: mediaUrl(ref),
+          thumbUrl: mediaThumbUrl(ref, 640, itemId),
+        };
+      });
   }
 
   // 一次拖入的多个文件放进同一个节点，节点内用堆叠卡片切换
