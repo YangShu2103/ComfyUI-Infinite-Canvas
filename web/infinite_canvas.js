@@ -1,21 +1,23 @@
 import { app } from "/scripts/app.js";
 
-const BTN_ID = "infinite-canvas-topbar-btn";
+const BTN_ID = "infinite-canvas-fab";
 const MODAL_ID = "infinite-canvas-modal";
 const STYLE_ID = "infinite-canvas-style";
 const LOG = "[Infinite-Canvas]";
 const READY_FLAG = "__INFINITE_CANVAS_READY__";
 
 const LABEL = "Infinite-Canvas";
-const ANCHOR_LABELS = ["管理扩展功能", "Manage extensions", "Manage Extensions"];
+// 入口位置记忆（拖拽后可移动）
+const POS_KEY = "infinite-canvas-fab-pos";
+const POS_API = "/infinite_canvas/api/fab-position";
+const BTN_SIZE = 44;
+const EDGE_GAP = 6;
 
-// 换掉锚点按钮的图标内容（沿用原生 svg 元素，只替换内部 path，保证尺寸/颜色一致）
+// 入口图标：四宫格画布
 const ICON_PATHS = `
-  <rect x="3" y="3" width="18" height="18" rx="2" fill="none"
+  <rect x="3" y="3" width="18" height="18" rx="4" fill="none"
     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></rect>
-  <path d="M3 9h18" fill="none" stroke="currentColor" stroke-width="2"
-    stroke-linecap="round" stroke-linejoin="round"></path>
-  <path d="M9 21V9" fill="none" stroke="currentColor" stroke-width="2"
+  <path d="M12 3v18M3 12h18" fill="none" stroke="currentColor" stroke-width="2"
     stroke-linecap="round" stroke-linejoin="round"></path>`;
 
 // 弹窗页面地址：Vue 构建产物，由后端静态路由托管
@@ -23,44 +25,47 @@ const PAGE_CANDIDATES = ["/infinite_canvas/app/index.html"];
 
 let resolvedPageUrl = null;
 let buttonEl = null;
-let injecting = false;
 
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
-/* 克隆出来的按钮：只补一条防穿透，其余样式全部来自原生节点 */
-#${BTN_ID} { position: relative; z-index: 1; pointer-events: auto; }
-
-/* 没有「管理扩展功能」（未装 ComfyUI-Manager）时自己长出来的入口 */
-#${BTN_ID}.ic-fallback {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  margin: 4px;
-  padding: 0 10px;
-  border: 1px solid var(--border-color, #333);
-  border-radius: 6px;
-  background: var(--comfy-menu-bg, #202020);
-  color: var(--input-text, #e0e0e0);
-  font: 500 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  cursor: pointer;
-}
-#${BTN_ID}.ic-fallback:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-}
-/* 连顶部菜单容器都拿不到时，退化成右上角悬浮按钮，保证入口一定可见 */
-#${BTN_ID}.ic-float {
+/* 右侧悬浮入口：圆形按钮，可拖拽到任意位置 */
+#${BTN_ID} {
   position: fixed;
-  top: 10px;
-  right: 10px;
-  margin: 0;
   z-index: 20000;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: ${BTN_SIZE}px;
+  height: ${BTN_SIZE}px;
+  padding: 0;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.14));
+  border-radius: 50%;
+  background: var(--comfy-menu-bg, #202020);
+  color: var(--input-text, #d8d8dc);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: transform 0.16s ease, background 0.16s ease, color 0.16s ease,
+    box-shadow 0.16s ease;
 }
+#${BTN_ID}:hover {
+  transform: translateY(-1px) scale(1.06);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+}
+/* 拖拽中：跟随指针移动，不保留悬停放大 */
+#${BTN_ID}.ic-dragging {
+  cursor: grabbing;
+  transform: none;
+  transition: none;
+}
+#${BTN_ID}:active { transform: scale(0.97); }
+#${BTN_ID} svg { pointer-events: none; }
 
 #${MODAL_ID} {
   position: fixed;
@@ -69,7 +74,7 @@ function injectStyles() {
   display: none;
   align-items: center;
   justify-content: center;
-  background: rgba(0,0,0,.6);
+  background: rgba(0, 0, 0, 0.6);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 #${MODAL_ID}.ic-open { display: flex; }
@@ -102,7 +107,7 @@ function injectStyles() {
   line-height: 1;
   cursor: pointer;
 }
-#${MODAL_ID} .ic-close:hover { background: rgba(255,255,255,.1); }
+#${MODAL_ID} .ic-close:hover { background: rgba(255, 255, 255, 0.1); }
 #${MODAL_ID} .ic-frame {
   flex: 1 1 auto;
   width: 100%;
@@ -170,243 +175,184 @@ async function resolvePageUrl() {
   return resolvedPageUrl;
 }
 
-// ---- 顶部栏按钮（克隆原生节点实现） ----
+// ---- 悬浮入口 ----
 
-function normalizeText(value) {
-  return (value || "").replace(/\s+/g, "");
+// 默认贴在页面右侧、约 58% 高度，避开顶栏与右下角缩放控件
+function defaultPosition() {
+  return {
+    left: window.innerWidth - BTN_SIZE - 18,
+    top: Math.round(window.innerHeight * 0.58),
+  };
 }
 
-function findAnchorButton() {
-  const nodes = document.querySelectorAll(
-    'button, a, [role="button"], [role="menuitem"], [role="tab"]'
-  );
-  const labels = ANCHOR_LABELS.map(normalizeText);
+// 位置限制在可视区域内，窗口缩小后也不会跑到屏幕外
+function clampPosition(pos) {
+  const maxLeft = Math.max(EDGE_GAP, window.innerWidth - BTN_SIZE - EDGE_GAP);
+  const maxTop = Math.max(EDGE_GAP, window.innerHeight - BTN_SIZE - EDGE_GAP);
+  return {
+    left: Math.min(Math.max(pos.left, EDGE_GAP), maxLeft),
+    top: Math.min(Math.max(pos.top, EDGE_GAP), maxTop),
+  };
+}
 
-  const candidates = [];
-  for (const el of nodes) {
-    if (el === buttonEl || el.querySelector(`#${BTN_ID}`)) continue;
-    candidates.push({
-      el,
-      texts: [
-        el.textContent,
-        el.getAttribute("aria-label"),
-        el.getAttribute("title"),
-      ].map(normalizeText),
-    });
-  }
+// 按比例存位置（fx/fy 是按钮左上角占视口的比例），换屏幕尺寸也能落在相近位置
+function positionToFraction(pos) {
+  return {
+    fx: window.innerWidth ? pos.left / window.innerWidth : 0,
+    fy: window.innerHeight ? pos.top / window.innerHeight : 0,
+    ts: Date.now(),
+  };
+}
 
-  for (const label of labels) {
-    for (const c of candidates) {
-      if (c.texts.some((t) => t === label)) return c.el;
+function fractionToPosition(data) {
+  return clampPosition({
+    left: data.fx * window.innerWidth,
+    top: data.fy * window.innerHeight,
+  });
+}
+
+function readLocalPosition() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(POS_KEY) || "null");
+    if (!saved) return null;
+    if (Number.isFinite(saved.fx) && Number.isFinite(saved.fy)) return saved;
+    // 兼容旧版本存的像素位置
+    if (Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      return positionToFraction(saved);
     }
-  }
-  for (const label of labels) {
-    for (const c of candidates) {
-      if (c.texts.some((t) => t && t.includes(label))) return c.el;
-    }
+  } catch {
+    // 位置数据损坏就当作没有存过
   }
   return null;
 }
 
-// 祖先链（跨越 shadow root 边界）
-function ancestorChain(el) {
-  const chain = [];
-  let cur = el;
-  while (cur) {
-    chain.push(cur);
-    cur = cur.parentElement || cur.getRootNode?.()?.host || null;
+function writeLocalPosition(data) {
+  try {
+    localStorage.setItem(POS_KEY, JSON.stringify(data));
+  } catch {
+    // 浏览器禁用存储时忽略，后端仍会记住位置
   }
-  return chain;
 }
 
-function commonAncestor(a, b) {
-  const setB = new Set(ancestorChain(b));
-  for (const node of ancestorChain(a)) {
-    if (setB.has(node)) return node;
-  }
-  return null;
+function applyPosition(pos) {
+  if (!buttonEl) return null;
+  const next = clampPosition(pos);
+  buttonEl.style.left = `${next.left}px`;
+  buttonEl.style.top = `${next.top}px`;
+  return next;
 }
 
-// 从 el 往上找，返回「其父节点正好是 ancestor」的那一层
-function climbToChildOf(el, ancestor) {
-  let cur = el;
-  while (cur) {
-    if (cur.parentElement === ancestor) return cur;
-    if (cur.parentElement) {
-      cur = cur.parentElement;
-      continue;
-    }
-    const host = cur.getRootNode?.()?.host;
-    if (host === ancestor) return cur;
-    cur = host || null;
-  }
-  return null;
+function currentPosition() {
+  return {
+    left: parseFloat(buttonEl?.style.left) || 0,
+    top: parseFloat(buttonEl?.style.top) || 0,
+  };
 }
 
-// 找到承载文案的节点：它要么是叶子，要么除 svg 外没有别的子元素
-function findLabelNode(root, labels) {
-  const norm = new Set(labels.map(normalizeText));
-  for (const el of [root, ...root.querySelectorAll("*")]) {
-    const otherChildren = [...el.children].filter(
-      (c) => c.tagName.toLowerCase() !== "svg"
-    );
-    if (otherChildren.length) continue;
-    if (norm.has(normalizeText(el.textContent))) return el;
-  }
-  return null;
+// 拖拽结束：本地立即记住，同时写回后端，换浏览器/设备也能恢复
+function savePosition(pos) {
+  const data = positionToFraction(pos);
+  writeLocalPosition(data);
+  fetch(POS_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  }).catch(() => {});
 }
 
-// 只替换文本节点，保留同级的 svg 图标
-function replaceLabelText(el, text) {
-  for (const node of el.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE && normalizeText(node.nodeValue)) {
-      node.nodeValue = text;
-      return true;
-    }
-  }
-  return false;
-}
-
-// 复制锚点按钮的外观：优先整块克隆它所在的卡片（含外层壳），退化则只克隆按钮
-function buildClone(anchor) {
-  const menuEl = app.menu?.element;
-  const common = menuEl ? commonAncestor(anchor, menuEl) : null;
-  const card = common ? climbToChildOf(anchor, common) : null;
-
-  if (card && card !== anchor) {
-    const clone = card.cloneNode(true);
-    const buttons = clone.querySelectorAll("button");
-    // 克隆内容必须真的带上了文案，且卡片里只有一个按钮才可用
-    if (findLabelNode(clone, ANCHOR_LABELS) && buttons.length <= 1) {
-      return { node: clone, ref: card };
-    }
-  }
-  return { node: anchor.cloneNode(true), ref: anchor };
-}
-
-function injectButton({ anchorOnly = false, forceFloat = false } = {}) {
-  if (buttonEl?.isConnected) return true;
-  if (injecting) return false;
-  injecting = true;
+// 打开页面时恢复上次位置：本地优先，再用后端较新的记录覆盖
+async function restorePosition() {
+  const local = readLocalPosition();
+  applyPosition(local ? fractionToPosition(local) : defaultPosition());
 
   try {
-    const anchor = findAnchorButton();
-    if (anchor) {
-      const { node, ref } = buildClone(anchor);
-      if (!ref?.parentElement) return false;
+    const res = await fetch(POS_API, { cache: "no-store" });
+    if (!res.ok) return;
+    const remote = (await res.json())?.fab_position;
+    if (!remote || !Number.isFinite(remote.fx) || !Number.isFinite(remote.fy)) return;
+    // 后端记录比本地新（比如换了设备拖过位置）才覆盖
+    if (local && (remote.ts || 0) <= (local.ts || 0)) return;
+    const data = { fx: remote.fx, fy: remote.fy, ts: remote.ts || 0 };
+    writeLocalPosition(data);
+    applyPosition(fractionToPosition(data));
+  } catch {
+    // 后端不可用时只用本地位置
+  }
+}
 
-      node.id = BTN_ID;
-      node.removeAttribute?.("disabled");
+function bindDrag(btn) {
+  let drag = null;
+  let dragged = false;
+  let lastPos = null;
 
-      const labelNode = findLabelNode(node, ANCHOR_LABELS);
-      if (labelNode) replaceLabelText(labelNode, LABEL);
-      else console.warn(LOG, "未找到文案节点，按钮文字可能仍是原样");
+  btn.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = btn.getBoundingClientRect();
+    drag = { pointerId: e.pointerId, startX: rect.left, startY: rect.top, x: e.clientX, y: e.clientY };
+    dragged = false;
+    lastPos = { left: rect.left, top: rect.top };
+    btn.setPointerCapture(e.pointerId);
+  });
 
-      // 换图标：仅在原生 svg 使用 24x24 viewBox 时替换内部 path
-      const svg = node.querySelector("svg");
-      if (svg && svg.getAttribute("viewBox") === "0 0 24 24") {
-        svg.innerHTML = ICON_PATHS;
-      }
-
-      node.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openModal();
-      });
-
-      ref.parentElement.insertBefore(node, ref);
-      buttonEl = node;
-
-      // 兜底：清掉可能存在的重复实例
-      document.querySelectorAll(`[id="${BTN_ID}"]`).forEach((n) => {
-        if (n !== node) n.remove();
-      });
-
-      console.log(LOG, "按钮已注入（克隆自「管理扩展功能」）", node);
-      return true;
+  btn.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const dx = e.clientX - drag.x;
+    const dy = e.clientY - drag.y;
+    // 小于 4px 的抖动算点击，不算拖拽
+    if (!dragged && Math.hypot(dx, dy) < 4) return;
+    if (!dragged) {
+      dragged = true;
+      btn.classList.add("ic-dragging");
     }
+    lastPos = applyPosition({ left: drag.startX + dx, top: drag.startY + dy }) || lastPos;
+  });
 
-    // 没有 Manager 提供的锚点：先等一会儿让顶部菜单渲染出来，再自己造一个入口
-    if (anchorOnly) return false;
-    return injectFallbackButton(forceFloat);
-  } catch (err) {
-    console.error(LOG, "注入入口失败", err);
-    return false;
-  } finally {
-    injecting = false;
-  }
+  const finish = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    drag = null;
+    btn.releasePointerCapture?.(e.pointerId);
+    btn.classList.remove("ic-dragging");
+    // 拖过位置就记住，没拖动就是一次普通点击
+    if (dragged) savePosition(lastPos || currentPosition());
+    else openModal();
+  };
+  btn.addEventListener("pointerup", finish);
+  btn.addEventListener("pointercancel", finish);
+
+  // 键盘操作：聚焦后回车/空格也能打开
+  btn.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openModal();
+    }
+  });
 }
 
-// 顶部菜单容器：优先用 app.menu.element，再退到旧版 .comfy-menu
-function findMenuHost() {
-  const candidates = [
-    app.menu?.element,
-    document.querySelector(".comfy-menu"),
-  ];
-  for (const el of candidates) {
-    if (!el) continue;
-    const rect = el.getBoundingClientRect?.();
-    // 只有放在屏幕上真的看得见才往里塞，否则会造出一个隐形按钮
-    if (rect && rect.width > 0 && rect.height > 0) return el;
-  }
-  return null;
-}
+function mountButton() {
+  if (buttonEl?.isConnected) return true;
 
-function injectFallbackButton(forceFloat = false) {
   const btn = document.createElement("button");
   btn.id = BTN_ID;
   btn.type = "button";
-  btn.className = "ic-fallback";
-  btn.title = LABEL;
-  btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">${ICON_PATHS}</svg><span>${LABEL}</span>`;
-  btn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openModal();
-  });
+  btn.title = `${LABEL}（可拖动）`;
+  btn.setAttribute("aria-label", LABEL);
+  btn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">${ICON_PATHS}</svg>`;
 
-  const host = forceFloat ? null : findMenuHost();
-  if (host) {
-    host.insertBefore(btn, host.firstChild);
-    console.log(LOG, "未找到「管理扩展功能」，已在顶部菜单注入独立入口");
-  } else {
-    btn.classList.add("ic-float");
-    document.body.appendChild(btn);
-    console.log(LOG, "未找到「管理扩展功能」与菜单容器，已在右上角注入悬浮入口");
-  }
-
+  document.body.appendChild(btn);
   buttonEl = btn;
+  applyPosition(defaultPosition());
+  restorePosition();
+  bindDrag(btn);
+
   // 兜底：清掉可能存在的重复实例
   document.querySelectorAll(`[id="${BTN_ID}"]`).forEach((n) => {
     if (n !== btn) n.remove();
   });
+
+  console.log(LOG, "悬浮入口已挂载");
   return true;
-}
-
-function startInjection() {
-  let tries = 0;
-  const attempt = () => {
-    // 前 1.5 秒只找 Manager 的锚点，给顶部菜单一点渲染时间；
-    // 之后开始自造入口，20 次（10 秒）仍拿不到菜单容器就用右上角悬浮按钮，
-    // 保证没装 ComfyUI-Manager 的环境也能打开画布
-    const ok = injectButton({ anchorOnly: tries < 3, forceFloat: tries >= 20 });
-    if (ok) return;
-    tries += 1;
-    if (tries < 120) {
-      setTimeout(attempt, 500);
-      return;
-    }
-    console.warn(LOG, "入口注入失败：页面里既没有「管理扩展功能」也没有可用的菜单容器");
-  };
-  attempt();
-
-  // 低频看门狗：按钮被前端重渲染彻底移除时才补回。
-  // 周期远大于 detach/attach 的窗口，不会像 MutationObserver 那样误判重建。
-  setInterval(() => {
-    if (buttonEl?.isConnected) return;
-    console.warn(LOG, "按钮不在页面中，重新注入");
-    injectButton();
-  }, 5000);
 }
 
 function onKeyDown(e) {
@@ -417,7 +363,7 @@ app.registerExtension({
   name: "ComfyUI.InfiniteCanvas",
 
   setup() {
-    // 防止该模块被前端加载两次时注入出两个按钮
+    // 防止该模块被前端加载两次时注入两个入口
     if (window[READY_FLAG]) {
       console.log(LOG, "已初始化，跳过重复注入");
       return;
@@ -425,8 +371,19 @@ app.registerExtension({
     window[READY_FLAG] = true;
 
     injectStyles();
-    startInjection();
+    mountButton();
     document.addEventListener("keydown", onKeyDown);
+
+    // 窗口尺寸变化后把按钮拉回可视范围内（保留用户保存的位置，仅本次夹紧）
+    window.addEventListener("resize", () => {
+      if (buttonEl?.isConnected) applyPosition(currentPosition());
+    });
+
+    // 低频看门狗：前端重渲染把按钮移除时才补回
+    setInterval(() => {
+      if (!buttonEl?.isConnected) mountButton();
+    }, 5000);
+
     console.log(LOG, "扩展已启动");
   },
 });

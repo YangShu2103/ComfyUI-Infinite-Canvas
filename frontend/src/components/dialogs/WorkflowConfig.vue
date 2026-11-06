@@ -448,18 +448,18 @@ function close() {
   padding: 0 28px 0 10px;
   border: 1px solid var(--c-line);
   border-radius: 8px;
-  background: #16161b;
+  background: var(--c-surface-2);
   color: var(--c-text);
   font-size: 12px;
   outline: none;
 }
 
 .wf-input::placeholder {
-  color: #6a6a78;
+  color: var(--c-muted-2);
 }
 
 .wf-input:focus {
-  border-color: #4a4a58;
+  border-color: var(--c-border-strong);
 }
 
 .wf-addr-clear {
@@ -478,21 +478,21 @@ function close() {
 }
 
 .wf-addr-clear:hover {
-  background: #26262f;
+  background: var(--c-hover);
   color: var(--c-text);
 }
 
 .wf-primary {
   height: 34px;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 8px;
-  background: #26262f;
+  background: var(--c-surface-3);
   color: var(--c-text);
   font-size: 12px;
 }
 
 .wf-primary:hover {
-  border-color: #4a4a58;
+  border-color: var(--c-accent);
 }
 
 .wf-primary:disabled {
@@ -527,12 +527,12 @@ function close() {
 }
 
 .wf-item:hover {
-  background: #26262f;
+  background: var(--c-hover);
 }
 
 .wf-item.is-active {
-  border-color: #3c3c48;
-  background: #2a2a33;
+  border-color: var(--c-border-strong);
+  background: var(--c-surface-3);
 }
 
 .wf-item.is-dragging {
@@ -540,8 +540,8 @@ function close() {
 }
 
 .wf-item.is-drop {
-  border-color: rgba(242, 255, 89, 0.6);
-  background: rgba(242, 255, 89, 0.08);
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+  background: var(--c-accent-weak);
 }
 
 .wf-item-icon {
@@ -575,7 +575,7 @@ function close() {
 
 .wf-upload {
   height: 34px;
-  border: 1px dashed #3c3c48;
+  border: 1px dashed var(--c-border-strong);
   border-radius: 8px;
   background: transparent;
   color: var(--c-muted);
@@ -583,21 +583,21 @@ function close() {
 }
 
 .wf-upload:hover {
-  border-color: #4a4a58;
+  border-color: var(--c-accent);
   color: var(--c-text);
 }
 
 .wf-msg {
   padding: 8px 10px;
   border-radius: 8px;
-  background: #23232b;
+  background: var(--c-surface-3);
   font-size: 11px;
   color: var(--c-muted);
 }
 
 .wf-msg.is-error {
-  background: #3a2224;
-  color: #ff9a9a;
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
 }
 
 /* ---------------- 右栏 ---------------- */
@@ -650,7 +650,7 @@ function close() {
 .wf-danger {
   height: 28px;
   padding: 0 10px;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 7px;
   background: transparent;
   color: var(--c-muted);
@@ -658,23 +658,23 @@ function close() {
 }
 
 .wf-danger:hover {
-  border-color: #6b3a3d;
-  background: #33222a;
-  color: #ff9a9a;
+  border-color: var(--c-danger-line);
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
 }
 
 .wf-save {
   height: 28px;
   padding: 0 12px;
-  border: 1px solid rgba(242, 255, 89, 0.5);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 50%, transparent);
   border-radius: 7px;
-  background: rgba(242, 255, 89, 0.14);
-  color: var(--accent-yellow);
+  background: color-mix(in srgb, var(--c-accent) 14%, transparent);
+  color: var(--c-accent);
   font-size: 11px;
 }
 
 .wf-save:hover:not(:disabled) {
-  background: rgba(242, 255, 89, 0.22);
+  background: color-mix(in srgb, var(--c-accent) 22%, transparent);
 }
 
 .wf-save:disabled {

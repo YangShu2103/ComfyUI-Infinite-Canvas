@@ -4,7 +4,7 @@
 
 前端是 Vue 3 + Vue Flow，后端是一个轻量 aiohttp 扩展，只负责托管页面、读写配置、代理执行与缩略图生成。
 
-![ComfyUI 顶部菜单中的 Infinite-Canvas 入口](docs/images/entry.png)
+![ComfyUI 页面右侧的 Infinite-Canvas 悬浮入口](docs/images/entry.png)
 
 ![画布总览](docs/images/canvas.jpg)
 
@@ -40,6 +40,18 @@
 
 - 拖到画布空白处新建节点、拖到节点上追加素材 —— 拖出来用的始终是**原图 / 原文件**，缩略图只用于面板展示
 
+**资产管理**
+
+- 底部工具栏「资产管理」打开全屏面板，按 `input` / `output` 两个 Tab 管理 ComfyUI 的真实文件
+
+- 左侧按 全部 / 图片 / 视频 / 音频 分类并显示数量，中间网格分页加载，支持关键字搜索与刷新
+
+- 右侧上方预览原文件并显示大小、修改时间，下方读取文件内嵌的 ComfyUI 工作流 JSON（PNG / WebP / 视频 元数据）
+
+- 批量管理模式下可勾选任意素材，批量删除或打包下载（后端打成一个 zip）
+
+![资产管理面板](docs/images/asset-manager.jpg)
+
 **提示词库**
 
 - 手动收藏、持久化保存
@@ -53,6 +65,7 @@
 | 纸飞机   | 恢复默认缩放，并把当前（或上一次点击的）节点居中 |
 | 全览    | 缩放到能看到整块画布               |
 | 画布管理  | 多画布的增删改与切换               |
+| 资产管理  | 管理 `input` / `output` 文件：预览、查看工作流、批量删除/下载 |
 | 工作流配置 | 上传 / 排序 / 配置工作流字段        |
 
 ## 安装
@@ -62,7 +75,7 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/YangShu2103/ComfyUI-Infinite-Canvas.git ComfyUI-Infinite-Canvas
 ```
 
-重启 ComfyUI，顶部菜单就会出现 `Infinite-Canvas` 入口。
+重启 ComfyUI，页面右侧会出现悬浮的 `Infinite-Canvas` 圆形入口，点击即可打开画布。
 
 - 前端构建产物已随仓库提交（`frontend/dist`），**普通用户不需要 Node.js 环境**。
 
@@ -135,7 +148,7 @@ npm run build   # 构建到 frontend/dist，ComfyUI 直接加载
 ```
 ComfyUI-Infinite-Canvas/
 ├── __init__.py            # 后端：路由、工作流/画布读写、缩略图
-├── web/infinite_canvas.js # 前端扩展：注入顶部入口 + iframe 弹窗
+├── web/infinite_canvas.js # 前端扩展：页面右下侧悬浮入口 + iframe 弹窗
 ├── docs/images/           # README 里的截图
 ├── frontend/              # Vue 3 + Vue Flow 源码
 │   ├── src/components/    # 节点、边、工具栏、资产库、弹窗
@@ -164,8 +177,8 @@ ComfyUI-Infinite-Canvas/
 
 ## 常见问题
 
-**顶部没有入口？**
-重启 ComfyUI，然后看浏览器控制台的 `[Infinite-Canvas]` 日志；若提示「已在右上角注入悬浮入口」，说明当前环境没有可用的顶部菜单容器。
+**找不到入口？**
+入口是页面右侧（默认约 58% 高度）的圆形按钮，可拖动到任意位置，位置会记住，悬停有 `Infinite-Canvas` 提示。若没有出现，重启 ComfyUI 并查看浏览器控制台的 `[Infinite-Canvas]` 日志。
 
 **缩略图不更新？**
 缓存按源文件 mtime + 大小失效，正常会自行重建；必要时直接删掉 `thumbs/` 目录。

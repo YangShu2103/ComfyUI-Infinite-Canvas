@@ -32,18 +32,18 @@ defineProps({
   border: 1px solid hsl(var(--n-hue) 42% 55% / 0.5);
   border-radius: 8px;
   background: hsl(var(--n-hue) 32% 15%);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px var(--c-shadow);
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .preview-node:hover {
   border-color: hsl(var(--n-hue) 55% 70%);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 16px var(--c-shadow);
 }
 
 .preview-node.is-configurable {
-  border-color: rgba(242, 255, 89, 0.55);
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
 }
 
 .preview-title {
@@ -53,7 +53,7 @@ defineProps({
   gap: 6px;
   font-size: 11px;
   font-weight: 600;
-  color: #e6e6ea;
+  color: var(--c-text);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -74,7 +74,7 @@ defineProps({
   gap: 4px;
   margin-top: 2px;
   font-size: 10px;
-  color: #9a9aa8;
+  color: var(--c-muted);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -82,7 +82,7 @@ defineProps({
 .preview-count {
   margin-left: auto;
   flex: 0 0 auto;
-  color: var(--accent-yellow);
+  color: var(--c-accent);
 }
 
 .preview-handle {
@@ -92,5 +92,27 @@ defineProps({
   min-height: 0;
   border: 0;
   background: hsl(var(--n-hue) 45% 60% / 0.7);
+}
+
+/* 亮色：节点底色变浅，色相保留；标题/类型文字切到主题文字色 */
+html[data-theme="light"] .preview-node {
+  border-color: hsl(var(--n-hue) 38% 62% / 0.45);
+  background: hsl(var(--n-hue) 40% 93%);
+}
+
+html[data-theme="light"] .preview-node:hover {
+  border-color: hsl(var(--n-hue) 45% 45%);
+}
+
+html[data-theme="light"] .preview-node.is-configurable {
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+
+html[data-theme="light"] .preview-id {
+  color: hsl(var(--n-hue) 55% 32%);
+}
+
+html[data-theme="light"] .preview-handle {
+  background: hsl(var(--n-hue) 45% 45% / 0.7);
 }
 </style>

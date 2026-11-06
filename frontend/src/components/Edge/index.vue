@@ -114,6 +114,10 @@ function removeEdges(ids) {
   cursor: pointer;
 }
 
+.canvas-edge {
+  stroke: var(--c-edge);
+}
+
 /* 锚点落在连线中点，本身不占位 */
 .edge-tool {
   position: absolute;
@@ -133,9 +137,9 @@ function removeEdges(ids) {
   align-items: center;
   justify-content: center;
   transform: translate(-50%, -50%);
-  border: 1px solid #4a4a58;
+  border: 1px solid var(--c-border-strong);
   border-radius: 50%;
-  background: #2a2a34;
+  background: var(--c-surface-3);
   color: var(--c-text);
   cursor: pointer;
   opacity: 0;
@@ -149,7 +153,7 @@ function removeEdges(ids) {
 }
 
 .edge-delete:hover {
-  color: #ff6b6b;
-  border-color: #ff6b6b;
+  color: var(--c-danger);
+  border-color: var(--c-danger);
 }
 </style>

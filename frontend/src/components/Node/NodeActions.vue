@@ -487,31 +487,31 @@ async function onMerge(blob, filename) {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid #4a4a58;
+  border: 1px solid var(--c-border-strong);
   border-radius: 50%;
-  background: rgba(38, 38, 46, 0.94);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  background: var(--c-surface-3);
+  box-shadow: 0 6px 16px var(--c-shadow);
   color: var(--c-text);
   cursor: pointer;
   transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
 }
 
 .fan-btn:hover {
-  border-color: var(--accent-yellow);
-  background: #33333d;
-  color: var(--accent-yellow);
+  border-color: var(--c-accent);
+  background: var(--c-hover);
+  color: var(--c-accent);
 }
 
 /* 可用按钮高亮：黄色描边 + 淡黄底；不可用按钮降透明度并禁用指针 */
 .fan-btn.is-enabled {
-  border-color: rgba(242, 255, 89, 0.75);
-  color: var(--accent-yellow);
-  background: rgba(242, 255, 89, 0.1);
+  border-color: color-mix(in srgb, var(--c-accent) 75%, transparent);
+  color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 10%, transparent);
 }
 
 .fan-btn.is-enabled:hover {
-  border-color: var(--accent-yellow);
-  background: rgba(242, 255, 89, 0.2);
+  border-color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 20%, transparent);
 }
 
 .fan-btn:disabled {
@@ -521,8 +521,8 @@ async function onMerge(blob, filename) {
 }
 
 .fan-btn:disabled:hover {
-  border-color: #4a4a58;
-  background: rgba(38, 38, 46, 0.94);
+  border-color: var(--c-border-strong);
+  background: var(--c-surface-3);
   color: var(--c-text);
 }
 
@@ -534,7 +534,7 @@ async function onMerge(blob, filename) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(8, 8, 12, 0.62);
+  background: var(--c-backdrop);
 }
 
 .asset-panel {
@@ -544,10 +544,10 @@ async function onMerge(blob, filename) {
   width: min(1120px, 93vw);
   height: min(720px, 90vh);
   padding: 12px;
-  border: 1px solid #3a3a46;
+  border: 1px solid var(--c-border-strong);
   border-radius: 18px;
-  background: #1c1c23;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  background: var(--c-surface);
+  box-shadow: 0 24px 60px var(--c-shadow);
 }
 
 .asset-close {
@@ -561,16 +561,16 @@ async function onMerge(blob, filename) {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid #4a4a58;
+  border: 1px solid var(--c-border-strong);
   border-radius: 50%;
-  background: rgba(30, 30, 38, 0.86);
+  background: color-mix(in srgb, var(--c-surface) 86%, transparent);
   color: var(--c-text);
   cursor: pointer;
 }
 
 .asset-close:hover {
-  color: var(--accent-yellow);
-  border-color: var(--accent-yellow);
+  color: var(--c-accent);
+  border-color: var(--c-accent);
 }
 
 .asset-body {
@@ -589,7 +589,7 @@ async function onMerge(blob, filename) {
   display: flex;
   overflow: hidden;
   border-radius: 12px;
-  background: #14141a;
+  background: var(--c-surface-2);
 }
 
 .asset-empty {
@@ -623,9 +623,9 @@ async function onMerge(blob, filename) {
   align-items: center;
   gap: 2px;
   padding: 5px 4px;
-  border: 1px solid #3a3a46;
+  border: 1px solid var(--c-border-strong);
   border-radius: 8px;
-  background: #24242d;
+  background: var(--c-surface-3);
   color: var(--c-text);
   font-size: 10px;
   line-height: 1.2;
@@ -634,14 +634,14 @@ async function onMerge(blob, filename) {
 }
 
 .tool-btn:hover:not(:disabled) {
-  border-color: var(--accent-yellow);
-  background: #2e2e38;
-  color: var(--accent-yellow);
+  border-color: var(--c-accent);
+  background: var(--c-hover);
+  color: var(--c-accent);
 }
 
 .tool-btn.is-active {
-  border-color: var(--accent-yellow);
-  color: var(--accent-yellow);
+  border-color: var(--c-accent);
+  color: var(--c-accent);
 }
 
 .tool-btn:disabled {
@@ -656,7 +656,7 @@ async function onMerge(blob, filename) {
   gap: 3px;
   padding: 3px;
   border-radius: 8px;
-  background: #23232c;
+  background: var(--c-surface-3);
 }
 
 .side-switch button {
@@ -673,7 +673,7 @@ async function onMerge(blob, filename) {
 
 .side-switch button.is-active {
   background: var(--accent-yellow);
-  color: #14140f;
+  color: var(--c-on-accent);
   font-weight: 600;
 }
 
@@ -685,7 +685,7 @@ async function onMerge(blob, filename) {
   margin-top: 6px;
   padding: 10px;
   border-radius: 10px;
-  background: #24242d;
+  background: var(--c-surface-3);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -711,18 +711,18 @@ async function onMerge(blob, filename) {
   width: 100%;
   height: 34px;
   margin-top: 10px;
-  border: 1px solid rgba(242, 255, 89, 0.6);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 60%, transparent);
   border-radius: 8px;
-  background: rgba(242, 255, 89, 0.08);
-  color: var(--accent-yellow);
+  background: color-mix(in srgb, var(--c-accent) 8%, transparent);
+  color: var(--c-accent);
   font-size: 12px;
   cursor: pointer;
 }
 
 .side-compare:hover,
 .side-compare.is-active {
-  border-color: var(--accent-yellow);
-  background: rgba(242, 255, 89, 0.2);
+  border-color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 20%, transparent);
 }
 
 /* 应用按钮容器：编辑器 Teleport 进来，沉底 */

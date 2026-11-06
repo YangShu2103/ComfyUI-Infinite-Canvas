@@ -52,7 +52,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEsc));
   border: 1px solid var(--c-line);
   border-radius: 20px;
   background: var(--c-panel);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 20px 60px var(--c-shadow);
 }
 
 .float-head {
@@ -82,7 +82,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEsc));
 }
 
 .float-close:hover {
-  background: #26262f;
+  background: var(--c-hover);
   color: var(--c-text);
 }
 

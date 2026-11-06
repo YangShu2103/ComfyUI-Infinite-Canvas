@@ -168,7 +168,7 @@ function onPointerUp() {
   min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  background: #14141a;
+  background: var(--c-surface);
   user-select: none;
 }
 
@@ -207,7 +207,7 @@ function onPointerUp() {
   padding: 2px 8px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.55);
-  color: var(--c-muted);
+  color: #f4f4f8;
   font-size: 11px;
 }
 
@@ -221,7 +221,7 @@ function onPointerUp() {
   gap: 6px;
   padding: 6px;
   border-radius: 10px;
-  background: rgba(14, 14, 19, 0.78);
+  background: color-mix(in srgb, var(--c-surface) 88%, transparent);
   overflow-x: auto;
 }
 
@@ -231,9 +231,9 @@ function onPointerUp() {
   width: 56px;
   height: 56px;
   padding: 0;
-  border: 1px solid #33333d;
+  border: 1px solid var(--c-line);
   border-radius: 8px;
-  background: #1a1a21;
+  background: var(--c-surface-2);
   overflow: hidden;
   cursor: pointer;
 }

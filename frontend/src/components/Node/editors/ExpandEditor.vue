@@ -255,7 +255,7 @@ onBeforeUnmount(() => {
 .editor-size {
   padding: 3px 10px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.5);
+  background: color-mix(in srgb, var(--c-surface) 85%, transparent);
   color: var(--c-text);
   font-size: 12px;
   text-align: center;
@@ -274,7 +274,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--accent-yellow);
   background: var(--accent-yellow);
-  color: #14140f;
+  color: var(--c-on-accent);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -294,7 +294,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  background: #14141a;
+  background: var(--c-surface);
   user-select: none;
   touch-action: none;
 }
@@ -303,7 +303,7 @@ onBeforeUnmount(() => {
   position: relative;
   overflow: hidden;
   background: #ffffff;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 1px var(--c-editor-outline);
 }
 
 .expand-img {
@@ -315,7 +315,7 @@ onBeforeUnmount(() => {
 
 .expand-handle {
   position: absolute;
-  background: #ffffff;
+  background: var(--c-editor-handle);
 }
 
 /* 四边中点的胶囊 */

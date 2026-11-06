@@ -263,14 +263,14 @@ async function removeSelected() {
   padding: 7px 12px;
   border: 1px solid var(--c-line);
   border-radius: 8px;
-  background: #23232b;
+  background: var(--c-surface-3);
   color: var(--c-text);
   font-size: 12px;
 }
 
 .cm-btn:hover:not(:disabled) {
-  border-color: #3c3c48;
-  background: #2a2a33;
+  border-color: var(--c-border-strong);
+  background: var(--c-hover);
 }
 
 .cm-btn:disabled {
@@ -279,12 +279,12 @@ async function removeSelected() {
 }
 
 .cm-btn.is-danger:not(:disabled) {
-  border-color: #5a2b2b;
-  color: #ff9b9b;
+  border-color: var(--c-danger-line);
+  color: var(--c-danger);
 }
 
 .cm-btn.is-danger:hover:not(:disabled) {
-  background: #3a1f1f;
+  background: var(--c-danger-soft);
 }
 
 .cm-state {
@@ -314,27 +314,27 @@ async function removeSelected() {
   gap: 12px;
   min-height: 168px;
   padding: 12px 12px 10px;
-  border: 1px solid #2a2a33;
+  border: 1px solid var(--c-line);
   border-radius: 16px;
-  background: #17171d;
+  background: var(--c-surface);
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .cm-card:hover {
-  border-color: #3c3c48;
-  background: #1b1b22;
+  border-color: var(--c-border-strong);
+  background: var(--c-hover);
 }
 
 .cm-card.is-current {
-  border-color: rgba(242, 255, 89, 0.5);
-  background: #1b1b18;
+  border-color: color-mix(in srgb, var(--c-accent) 50%, transparent);
+  background: color-mix(in srgb, var(--c-accent) 6%, var(--c-surface));
   cursor: default;
 }
 
 .cm-card.is-selected {
-  border-color: var(--accent-yellow);
-  background: #1e1e17;
+  border-color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 10%, var(--c-surface));
 }
 
 .cm-card-top {
@@ -347,10 +347,10 @@ async function removeSelected() {
   display: inline-flex;
   align-items: center;
   padding: 3px 9px;
-  border: 1px solid rgba(242, 255, 89, 0.45);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 45%, transparent);
   border-radius: 999px;
-  background: rgba(242, 255, 89, 0.1);
-  color: var(--accent-yellow);
+  background: var(--c-accent-weak);
+  color: var(--c-accent);
   font-size: 11px;
   letter-spacing: 0.03em;
   white-space: nowrap;
@@ -359,8 +359,8 @@ async function removeSelected() {
 .cm-current {
   padding: 2px 7px;
   border-radius: 999px;
-  background: rgba(242, 255, 89, 0.12);
-  color: var(--accent-yellow);
+  background: var(--c-accent-weak);
+  color: var(--c-accent);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -393,9 +393,9 @@ async function removeSelected() {
 .cm-rename {
   width: 100%;
   padding: 6px 8px;
-  border: 1px solid var(--accent-yellow);
+  border: 1px solid var(--c-accent);
   border-radius: 8px;
-  background: #101015;
+  background: var(--c-surface-2);
   color: var(--c-text);
   font-size: 14px;
   outline: none;
@@ -406,9 +406,9 @@ async function removeSelected() {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid #2f2f39;
+  border: 1px solid var(--c-line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in srgb, var(--c-text) 2%, transparent);
 }
 
 .cm-card-meta-text {
@@ -427,16 +427,16 @@ async function removeSelected() {
   width: 14px;
   height: 14px;
   margin: 0;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 4px;
-  background: #0f0f13;
+  background: var(--c-surface-2);
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
 }
 
 .cm-check:hover {
-  border-color: #5a5a68;
+  border-color: var(--c-border-strong);
 }
 
 .cm-check:checked {
@@ -451,7 +451,7 @@ async function removeSelected() {
   top: 0;
   width: 5px;
   height: 8px;
-  border: solid #16160f;
+  border: solid var(--c-on-accent);
   border-width: 0 2px 2px 0;
   transform: rotate(42deg);
 }
@@ -469,13 +469,13 @@ async function removeSelected() {
 }
 
 .cm-icon:hover {
-  background: #26262f;
+  background: var(--c-hover);
   color: var(--c-text);
 }
 
 .cm-icon.is-danger:hover {
-  background: #3a1f1f;
-  color: #ff9b9b;
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
 }
 
 .cm-empty {
@@ -489,6 +489,11 @@ async function removeSelected() {
 .cm-msg {
   flex: 0 0 auto;
   font-size: 12px;
-  color: #ff9b9b;
+  color: var(--c-danger);
+}
+
+/* 亮色下原本的琥珀色对比太弱，换深一档 */
+html[data-theme="light"] .cm-state.is-dirty {
+  color: #a8701f;
 }
 </style>

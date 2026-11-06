@@ -348,8 +348,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   height: 28px;
   border: 1px solid var(--accent-yellow);
   border-radius: 50%;
-  background: rgba(14, 14, 19, 0.82);
-  color: var(--accent-yellow);
+  background: color-mix(in srgb, var(--c-surface) 82%, transparent);
+  color: var(--c-accent);
   transform: translate(-50%, -50%);
 }
 
@@ -385,7 +385,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: #14141a;
+  background: var(--c-surface);
 }
 
 .cmp-play {
@@ -394,15 +394,15 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: 1px solid rgba(242, 255, 89, 0.75);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 75%, transparent);
   border-radius: 50%;
-  background: rgba(242, 255, 89, 0.1);
-  color: var(--accent-yellow);
+  background: var(--c-accent-weak);
+  color: var(--c-accent);
   cursor: pointer;
 }
 
 .cmp-play:hover {
-  background: rgba(242, 255, 89, 0.22);
+  background: color-mix(in srgb, var(--c-accent) 22%, transparent);
 }
 
 .cmp-time {
@@ -421,8 +421,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   display: flex;
   gap: 2px;
   padding: 2px;
+  border: 1px solid var(--c-line);
   border-radius: 8px;
-  background: rgba(14, 14, 19, 0.82);
+  background: color-mix(in srgb, var(--c-surface) 92%, transparent);
   transform: translateX(-50%);
 }
 
@@ -442,8 +443,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
 }
 
 .cmp-mode.is-active {
-  background: rgba(242, 255, 89, 0.16);
-  color: var(--accent-yellow);
+  background: var(--c-accent-weak);
+  color: var(--c-accent);
 }
 
 .cmp-opacity {
@@ -455,9 +456,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   align-items: center;
   gap: 8px;
   padding: 5px 10px;
+  border: 1px solid var(--c-line);
   border-radius: 8px;
-  background: rgba(14, 14, 19, 0.82);
-  color: #cfcfd6;
+  background: color-mix(in srgb, var(--c-surface) 92%, transparent);
+  color: var(--c-text);
   font-size: 11px;
   transform: translateX(-50%);
 }

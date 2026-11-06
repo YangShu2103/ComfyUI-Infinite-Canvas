@@ -135,7 +135,7 @@ def _list_workflows():
 
 
 def _load_settings():
-    settings = {"comfy_address": "", "workflow_order": []}
+    settings = {"comfy_address": "", "workflow_order": [], "fab_position": None}
     path = _settings_path()
     if os.path.isfile(path):
         try:
@@ -148,15 +148,27 @@ def _load_settings():
             order = data.get("workflow_order", [])
             if isinstance(order, list):
                 settings["workflow_order"] = [str(name) for name in order if name]
+            fab = data.get("fab_position")
+            if isinstance(fab, dict):
+                try:
+                    settings["fab_position"] = {
+                        "fx": min(max(float(fab.get("fx")), 0.0), 1.0),
+                        "fy": min(max(float(fab.get("fy")), 0.0), 1.0),
+                        "ts": int(fab.get("ts") or 0),
+                    }
+                except (TypeError, ValueError):
+                    settings["fab_position"] = None
     return settings
 
 
-def _save_settings(address=None, workflow_order=None):
+def _save_settings(address=None, workflow_order=None, fab_position=None):
     settings = _load_settings()
     if address is not None:
         settings["comfy_address"] = address
     if workflow_order is not None:
         settings["workflow_order"] = [str(name) for name in workflow_order if name]
+    if fab_position is not None:
+        settings["fab_position"] = fab_position
     os.makedirs(_data_dir(), exist_ok=True)
     with open(_settings_path(), "w", encoding="utf-8") as handle:
         json.dump(settings, handle, ensure_ascii=False, indent=2)
@@ -1127,6 +1139,26 @@ def register_routes(app):
             address = f"http://{address}"
         return web.json_response(_save_settings(address))
 
+    async def get_fab_position(request):
+        return web.json_response({"fab_position": _load_settings().get("fab_position")})
+
+    async def save_fab_position(request):
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+        try:
+            fab = {
+                "fx": min(max(float(payload.get("fx")), 0.0), 1.0),
+                "fy": min(max(float(payload.get("fy")), 0.0), 1.0),
+                "ts": int(payload.get("ts") or 0),
+            }
+        except (TypeError, ValueError):
+            return web.json_response({"error": "位置格式不正确"}, status=400)
+        return web.json_response(
+            {"fab_position": _save_settings(fab_position=fab)["fab_position"]}
+        )
+
     async def list_workflows(request):
         return web.json_response({"workflows": _list_workflows()})
 
@@ -1642,6 +1674,8 @@ def register_routes(app):
         [
             web.get(f"{API_PREFIX}/settings", get_settings),
             web.post(f"{API_PREFIX}/settings", save_settings),
+            web.get(f"{API_PREFIX}/fab-position", get_fab_position),
+            web.post(f"{API_PREFIX}/fab-position", save_fab_position),
             web.get(f"{API_PREFIX}/workflows", list_workflows),
             web.post(f"{API_PREFIX}/workflows", save_workflow),
             web.put(f"{API_PREFIX}/workflows/order", reorder_workflows),

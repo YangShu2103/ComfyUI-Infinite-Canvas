@@ -21,7 +21,7 @@
       :fit-view-on-init="true"
       @node-click="onNodeClick"
     >
-      <Background pattern-color="#24242c" :gap="18" />
+      <Background :pattern-color="canvasGridColor" :gap="18" />
     </VueFlow>
 
     <div v-if="!workflow" class="wf-empty">选择左侧工作流查看预览</div>
@@ -34,6 +34,7 @@ import { computed, markRaw, nextTick, watch } from "vue";
 import { VueFlow, useVueFlow } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import PreviewNode from "./PreviewNode.vue";
+import { useTheme } from "../../composables/useTheme.js";
 
 const props = defineProps({
   workflow: { type: Object, default: null },
@@ -43,6 +44,7 @@ const props = defineProps({
 const emit = defineEmits(["inspect"]);
 
 const nodeTypes = { preview: markRaw(PreviewNode) };
+const { canvasGridColor } = useTheme();
 
 // 每个节点已暴露的字段数，画在节点卡片上
 const exposedCount = computed(() => {
@@ -195,7 +197,7 @@ watch(
 }
 
 .wf-preview :deep(.vue-flow__edge-path) {
-  stroke: #55555f;
+  stroke: var(--c-edge);
   stroke-width: 1.2;
 }
 
@@ -210,7 +212,7 @@ watch(
   padding: 3px;
   border: 1px solid var(--c-line);
   border-radius: 8px;
-  background: rgba(28, 28, 34, 0.9);
+  background: color-mix(in srgb, var(--c-surface) 90%, transparent);
   backdrop-filter: blur(6px);
 }
 
@@ -227,7 +229,7 @@ watch(
 }
 
 .wf-tools button:hover {
-  background: #26262f;
+  background: var(--c-hover);
   color: var(--c-text);
 }
 
@@ -258,6 +260,6 @@ watch(
 .wf-empty.is-tip {
   inset: auto 0 14px;
   font-size: 11px;
-  color: #6f6f7d;
+  color: var(--c-muted);
 }
 </style>

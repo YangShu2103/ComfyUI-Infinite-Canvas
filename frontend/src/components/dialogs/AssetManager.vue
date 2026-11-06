@@ -726,7 +726,7 @@ onBeforeUnmount(() => {
 }
 
 .am-btn:hover:not(:disabled) {
-  border-color: #44444f;
+  border-color: var(--c-border-strong);
 }
 
 .am-btn:disabled {
@@ -740,8 +740,8 @@ onBeforeUnmount(() => {
 }
 
 .am-btn.is-danger {
-  border-color: #5a3038;
-  color: #ff8f8f;
+  border-color: var(--c-danger-line);
+  color: var(--c-danger);
 }
 
 .am-search {
@@ -756,7 +756,7 @@ onBeforeUnmount(() => {
 }
 
 .am-search:focus {
-  border-color: #4a4a58;
+  border-color: var(--c-border-strong);
 }
 
 .am-body {
@@ -869,7 +869,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border: 1px solid var(--c-line);
   border-radius: 10px;
-  background: #141418;
+  background: var(--c-surface-2);
   cursor: pointer;
 }
 
@@ -944,9 +944,9 @@ onBeforeUnmount(() => {
   width: 14px;
   height: 14px;
   margin: 0;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 4px;
-  background: #0f0f13;
+  background: var(--c-surface-2);
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
@@ -954,12 +954,12 @@ onBeforeUnmount(() => {
 }
 
 .am-check input:hover {
-  border-color: #5a5a68;
+  border-color: var(--c-border-strong);
 }
 
 .am-check input:checked {
-  border-color: var(--c-accent);
-  background: var(--c-accent);
+  border-color: var(--accent-yellow);
+  background: var(--accent-yellow);
 }
 
 .am-check input:checked::after {
@@ -969,7 +969,7 @@ onBeforeUnmount(() => {
   top: 0;
   width: 5px;
   height: 8px;
-  border: solid #16160f;
+  border: solid var(--c-on-accent);
   border-width: 0 2px 2px 0;
   transform: rotate(42deg);
 }
@@ -1009,7 +1009,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 7px;
   background: rgba(16, 16, 20, 0.72);
-  color: var(--c-text);
+  color: #fff;
   cursor: pointer;
   backdrop-filter: blur(6px);
 }
@@ -1031,7 +1031,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   border-radius: 10px;
-  background: #101013;
+  background: var(--c-surface-2);
 }
 
 .am-preview-body img,
@@ -1103,7 +1103,7 @@ onBeforeUnmount(() => {
   padding: 10px;
   overflow: auto;
   border-radius: 10px;
-  background: #101013;
+  background: var(--c-surface-2);
   color: var(--c-text);
   font-size: 12px;
   line-height: 1.65;
@@ -1134,7 +1134,7 @@ onBeforeUnmount(() => {
   padding: 7px 14px;
   border: 1px solid var(--c-line);
   border-radius: 9px;
-  background: rgba(24, 24, 30, 0.95);
+  background: color-mix(in srgb, var(--c-surface) 95%, transparent);
   color: var(--c-text);
   font-size: 12px;
 }

@@ -364,9 +364,9 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 28px;
   padding: 0 8px;
-  border: 1px solid #3a3a46;
+  border: 1px solid var(--c-border-strong);
   border-radius: 8px;
-  background: #24242d;
+  background: var(--c-surface-3);
   color: var(--c-text);
   font-size: 12px;
   outline: none;
@@ -384,7 +384,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--accent-yellow);
   background: var(--accent-yellow);
-  color: #14140f;
+  color: var(--c-on-accent);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -404,7 +404,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  background: #14141a;
+  background: var(--c-surface);
   user-select: none;
   touch-action: none;
 }

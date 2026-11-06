@@ -21,7 +21,7 @@
         :zoom-on-double-click="false"
         :connection-radius="70"
       >
-        <Background pattern-color="#2a2a33" :gap="20" />
+        <Background :pattern-color="canvasGridColor" :gap="20" />
       </VueFlow>
 
       <!-- 右上角：提示词 / 资产库 面板 -->
@@ -53,6 +53,9 @@ import { dialogs, openDialog, closeAllDialogs } from "./stores/dialogs.js";
 import { useGraph } from "./composables/useGraph.js";
 import { useCanvas } from "./composables/useCanvas.js";
 import { FILE_ASSET_DRAG_TYPE } from "./composables/useLibrary.js";
+import { useTheme } from "./composables/useTheme.js";
+
+const { canvasGridColor } = useTheme();
 
 const nodeTypes = { demo: markRaw(DemoNode) };
 const edgeTypes = { canvas: markRaw(CanvasEdge) };
@@ -258,23 +261,24 @@ async function onDrop(event) {
   content: "";
   position: absolute;
   inset: 10px;
-  border: 2px dashed rgba(230, 230, 234, 0.55);
+  border: 2px dashed color-mix(in srgb, var(--c-text) 55%, transparent);
   border-radius: 18px;
-  background: rgba(230, 230, 234, 0.04);
+  background: color-mix(in srgb, var(--c-text) 4%, transparent);
   pointer-events: none;
   z-index: 6;
 }
 
 /* 连线虚线 */
 .flow-wrap :deep(.vue-flow__edge-path) {
+  stroke: var(--c-edge);
   stroke-dasharray: 6 5;
 }
 
 /* 与选中节点相连的线：主题色实线 + 轻微光晕 */
 .flow-wrap :deep(.vue-flow__edge-path.is-highlight) {
-  stroke: var(--accent-yellow);
+  stroke: var(--c-accent);
   stroke-width: 2.5;
   stroke-dasharray: none;
-  filter: drop-shadow(0 0 4px rgba(242, 255, 89, 0.45));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--c-accent) 45%, transparent));
 }
 </style>

@@ -263,7 +263,7 @@ function close() {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(10, 10, 13, 0.55);
+  background: var(--c-backdrop);
   backdrop-filter: blur(2px);
 }
 
@@ -272,10 +272,10 @@ function close() {
   flex-direction: column;
   width: min(520px, 100%);
   max-height: 100%;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 16px;
-  background: #24242b;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  background: var(--c-surface);
+  box-shadow: 0 20px 50px var(--c-shadow);
   overflow: hidden;
 }
 
@@ -326,7 +326,7 @@ function close() {
 }
 
 .nf-close:hover {
-  background: #26262f;
+  background: var(--c-hover);
   color: var(--c-text);
 }
 
@@ -342,9 +342,9 @@ function close() {
 
 .nf-item {
   padding: 9px 10px;
-  border: 1px solid #2f2f39;
+  border: 1px solid var(--c-line);
   border-radius: 10px;
-  background: #1c1c23;
+  background: var(--c-surface-2);
 }
 
 .nf-enable {
@@ -359,16 +359,16 @@ function close() {
   width: 14px;
   height: 14px;
   margin: 0;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 4px;
-  background: #0f0f13;
+  background: var(--c-surface-2);
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
 }
 
 .nf-check:hover {
-  border-color: #5a5a68;
+  border-color: var(--c-border-strong);
 }
 
 .nf-check:checked {
@@ -389,7 +389,7 @@ function close() {
   flex: 0 1 auto;
   min-width: 0;
   font-size: 11px;
-  color: #6f6f7d;
+  color: var(--c-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -401,7 +401,7 @@ function close() {
   gap: 6px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px dashed #2f2f39;
+  border-top: 1px dashed var(--c-line);
 }
 
 .nf-row {
@@ -413,9 +413,9 @@ function close() {
 .nf-input {
   height: 28px;
   padding: 0 8px;
-  border: 1px solid #34343f;
+  border: 1px solid var(--c-border-strong);
   border-radius: 7px;
-  background: #15151a;
+  background: var(--c-surface-2);
   color: var(--c-text);
   font-size: 12px;
   outline: none;
@@ -424,7 +424,7 @@ function close() {
 
 .nf-select:focus,
 .nf-input:focus {
-  border-color: #4a4a58;
+  border-color: var(--c-accent);
 }
 
 .nf-select {
@@ -448,10 +448,10 @@ function close() {
 .nf-note {
   padding: 6px 8px;
   border-radius: 7px;
-  background: #15151a;
+  background: var(--c-surface-2);
   font-size: 11px;
   line-height: 1.5;
-  color: #8a8a98;
+  color: var(--c-muted);
 }
 
 .nf-remove {
@@ -460,31 +460,31 @@ function close() {
   height: 28px;
   display: grid;
   place-items: center;
-  border: 1px solid #34343f;
+  border: 1px solid var(--c-border-strong);
   border-radius: 7px;
-  background: #15151a;
+  background: var(--c-surface-2);
   color: var(--c-muted);
   font-size: 14px;
   line-height: 1;
 }
 
 .nf-remove:hover {
-  border-color: #6b3a3d;
-  background: #33222a;
-  color: #ff9a9a;
+  border-color: var(--c-danger-line);
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
 }
 
 .nf-add {
   height: 28px;
-  border: 1px dashed rgba(242, 255, 89, 0.45);
+  border: 1px dashed color-mix(in srgb, var(--c-accent) 45%, transparent);
   border-radius: 7px;
   background: transparent;
-  color: var(--accent-yellow);
+  color: var(--c-accent);
   font-size: 11px;
 }
 
 .nf-add:hover {
-  background: rgba(242, 255, 89, 0.1);
+  background: var(--c-accent-weak);
 }
 
 .nf-num {
@@ -529,10 +529,10 @@ function close() {
 .nf-done {
   height: 30px;
   padding: 0 16px;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-border-strong);
   border-radius: 8px;
   background: var(--accent-yellow);
-  color: #1a1a10;
+  color: var(--c-on-accent);
   font-size: 12px;
   font-weight: 600;
 }

@@ -124,7 +124,25 @@
         />
       </div>
     </div>
-    <div v-else-if="!showProgress" class="node-empty">支持图片 / 视频预览</div>
+    <div
+      v-else-if="!showProgress"
+      class="node-empty"
+      title="点击上传图片 / 视频 / 音频"
+      @mousedown="onEmptyMouseDown"
+      @click.stop="onEmptyClick"
+    >
+      拖入文件或点击上传图片 / 视频 / 音频
+    </div>
+
+    <!-- 空节点点击时的系统文件选择框，上传后直接追加到本节点 -->
+    <input
+      ref="fileInput"
+      class="node-file-input"
+      type="file"
+      multiple
+      accept="image/*,video/*,audio/*"
+      @change="onFilesPicked"
+    />
 
     <!-- 运行态：整体流光背景 + 上下布局（图标在上，文字在下），不显示假百分比 -->
     <div
@@ -947,6 +965,36 @@ function retryItem(item) {
   graph?.retryUpload?.(item);
 }
 
+// 空节点点击直接打开系统文件选择框，选中的文件追加到本节点
+const fileInput = ref(null);
+let emptyGrab = null;
+
+function onEmptyMouseDown(event) {
+  if (event.button !== 0 || event.altKey) return;
+  emptyGrab = { x: event.clientX, y: event.clientY };
+}
+
+function onEmptyClick(event) {
+  const start = emptyGrab;
+  emptyGrab = null;
+  // 拖动节点也会在同一个元素上产生 click，位移过大就不算点击
+  if (!start || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6) return;
+  pickFiles();
+}
+
+function pickFiles() {
+  if (!fileInput.value) return;
+  // 重置后才能再次选中同一个文件
+  fileInput.value.value = "";
+  fileInput.value.click();
+}
+
+function onFilesPicked(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (files.length) graph?.appendMedia?.(props.id, files);
+}
+
 // 当前节点的运行状态（由 useGraph 统一维护，不写进画布数据）
 const runState = computed(() => graph?.runStates?.[props.id] || null);
 
@@ -1445,10 +1493,10 @@ async function run() {
   width: 400px;
   height: 260px;
   padding: 10px;
-  border: 1px solid #30303a;
+  border: 1px solid var(--c-line);
   border-radius: 20px;
   background: var(--c-panel-2);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 18px var(--c-shadow);
 }
 
 /* 选中态由 Vue Flow 挂在外部节点容器上，作用到最后一级 .demo-node */
@@ -1487,10 +1535,10 @@ async function run() {
   left: 50%;
   width: 84%;
   overflow: hidden;
-  border: 1px solid #33333d;
+  border: 1px solid var(--c-line);
   border-radius: 14px;
   background: var(--c-input-bg);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 10px 24px var(--c-shadow);
   cursor: pointer;
   transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
   will-change: transform;
@@ -1516,7 +1564,7 @@ async function run() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #23232b, #15151a);
+  background: linear-gradient(135deg, var(--c-surface-3), var(--c-surface-2));
   pointer-events: none;
 }
 
@@ -1527,8 +1575,8 @@ async function run() {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--c-text-dim, #8b8b96);
+  background: color-mix(in srgb, var(--c-text) 8%, transparent);
+  color: var(--c-muted);
   font-size: 12px;
 }
 
@@ -1559,10 +1607,10 @@ async function run() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(230, 230, 234, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.35);
   border-radius: 50%;
   background: rgba(15, 15, 20, 0.72);
-  color: var(--c-text);
+  color: #fff;
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
@@ -1575,8 +1623,8 @@ async function run() {
 }
 
 .card-delete:hover {
-  color: #ff6b6b;
-  border-color: #ff6b6b;
+  color: var(--c-danger);
+  border-color: var(--c-danger);
 }
 
 /* 上传状态 / 失败重试：盖在卡片底部，不挡拖动和删除按钮 */
@@ -1594,7 +1642,7 @@ async function run() {
   border: 0;
   border-radius: 6px;
   background: rgba(12, 12, 16, 0.72);
-  color: var(--c-text);
+  color: #fff;
   font-size: 10px;
   line-height: 14px;
   text-align: center;
@@ -1646,10 +1694,23 @@ async function run() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed #33333d;
+  border: 1px dashed var(--c-line);
   border-radius: 14px;
   color: var(--c-muted);
   font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.node-empty:hover {
+  border-color: color-mix(in srgb, var(--c-accent) 45%, var(--c-line));
+  background: var(--c-accent-weak);
+  color: var(--c-text);
+}
+
+/* 空节点点击上传用的隐藏 file input */
+.node-file-input {
+  display: none;
 }
 
 /* 运行态：不铺满颜色，只在中心做一层缓慢呼吸的黄色光晕 */
@@ -1671,8 +1732,8 @@ async function run() {
   inset: 0;
   background: radial-gradient(
     circle at center,
-    rgba(242, 255, 89, 0.13),
-    rgba(242, 255, 89, 0) 48%
+    color-mix(in srgb, var(--c-accent) 13%, transparent),
+    transparent 48%
   );
   animation: node-queued-pulse 1.6s ease-in-out infinite;
 }
@@ -1682,8 +1743,8 @@ async function run() {
   z-index: 1;
   width: 26px;
   height: 26px;
-  border: 2px solid rgba(242, 255, 89, 0.2);
-  border-top-color: var(--accent-yellow);
+  border: 2px solid color-mix(in srgb, var(--c-accent) 20%, transparent);
+  border-top-color: var(--c-accent);
   border-radius: 50%;
   animation: node-spin 0.9s linear infinite;
 }
@@ -1718,7 +1779,7 @@ async function run() {
   max-width: 90%;
   font-size: 12px;
   font-weight: 400;
-  color: #ff6b6b;
+  color: var(--c-danger);
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
@@ -1746,7 +1807,7 @@ async function run() {
 }
 
 .node-progress-icon.is-error {
-  color: #ff6b6b;
+  color: var(--c-danger);
 }
 
 .node-progress-label.is-small {
@@ -1773,10 +1834,10 @@ async function run() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed var(--accent-yellow);
+  border: 1px dashed var(--c-accent);
   border-radius: 20px;
-  background: rgba(242, 255, 89, 0.08);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  background: color-mix(in srgb, var(--c-accent) 8%, transparent);
+  box-shadow: 0 18px 40px var(--c-shadow);
   pointer-events: none;
 }
 
@@ -1784,7 +1845,7 @@ async function run() {
   padding: 0 10px;
   font-size: 12px;
   letter-spacing: 0.04em;
-  color: rgba(242, 255, 89, 0.85);
+  color: color-mix(in srgb, var(--c-accent) 85%, transparent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1885,10 +1946,10 @@ async function run() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #4a4a58;
+  border: 1px solid var(--c-border-strong);
   border-radius: 50%;
-  background: #2a2a34;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  background: var(--c-surface-3);
+  box-shadow: 0 4px 12px var(--c-shadow);
   color: var(--c-text);
   cursor: pointer;
   opacity: 0;
@@ -1902,8 +1963,8 @@ async function run() {
 }
 
 .node-delete:hover {
-  color: #ff6b6b;
-  border-color: #ff6b6b;
+  color: var(--c-danger);
+  border-color: var(--c-danger);
 }
 
 /* 右下角缩放把手：随节点缩放显示，抓住后拖动改变节点尺寸 */
@@ -1918,7 +1979,7 @@ async function run() {
   width: 22px;
   height: 22px;
   border-radius: 8px;
-  color: rgba(230, 230, 234, 0.5);
+  color: color-mix(in srgb, var(--c-text) 50%, transparent);
   cursor: nwse-resize;
   opacity: 0;
   pointer-events: none;
@@ -1932,12 +1993,12 @@ async function run() {
 }
 
 .node-resize:hover {
-  background: rgba(242, 255, 89, 0.12);
-  color: var(--accent-yellow);
+  background: var(--c-accent-weak);
+  color: var(--c-accent);
 }
 
 .node-resize:active {
-  color: var(--accent-yellow);
+  color: var(--c-accent);
 }
 
 /* 节点下方的操作面板：尺寸固定，始终与节点水平居中 */
@@ -1950,10 +2011,10 @@ async function run() {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px solid #30303a;
+  border: 1px solid var(--c-line);
   border-radius: 20px;
   background: var(--c-panel-2);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 10px 24px var(--c-shadow);
   cursor: default;
   will-change: opacity, transform;
 }
@@ -1987,7 +2048,7 @@ async function run() {
   width: 60px;
   height: 60px;
   overflow: hidden;
-  border: 1px solid #33333d;
+  border: 1px solid var(--c-line);
   border-radius: 8px;
   cursor: grab;
   transition: border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
@@ -2011,10 +2072,10 @@ async function run() {
   position: fixed;
   z-index: 40;
   overflow: hidden;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-line-strong);
   border-radius: 14px;
-  background: #14141a;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+  background: var(--c-surface);
+  box-shadow: 0 18px 44px var(--c-shadow);
   pointer-events: none;
 }
 
@@ -2031,7 +2092,7 @@ async function run() {
   place-items: center;
   width: 100%;
   height: 100%;
-  color: #b9b9c4;
+  color: var(--c-muted);
   font-size: 13px;
 }
 
@@ -2042,7 +2103,7 @@ async function run() {
   bottom: 0;
   padding: 18px 10px 8px;
   overflow: hidden;
-  color: #eaeaef;
+  color: #f4f4f8;
   font-size: 11px;
   text-align: center;
   text-overflow: ellipsis;
@@ -2152,7 +2213,7 @@ async function run() {
 .wf-pill {
   flex: 0 0 auto;
   padding: 6px 8px;
-  border: 1px solid #30303a;
+  border: 1px solid var(--c-line);
   border-radius: 8px;
   background: var(--c-input-bg);
   color: var(--c-muted);
@@ -2169,20 +2230,20 @@ async function run() {
 
 .wf-pill:hover {
   color: var(--c-text);
-  border-color: #4a4a58;
-  background: rgba(38, 38, 46, 0.95);
+  border-color: var(--c-border-strong);
+  background: var(--c-hover);
 }
 
 .wf-pill.is-active {
   color: var(--c-text);
   border-color: var(--c-accent);
-  background: rgba(230, 230, 234, 0.1);
+  background: color-mix(in srgb, var(--c-text) 10%, transparent);
 }
 
 .panel-error {
   font-size: 11px;
   line-height: 1.4;
-  color: #ff7b7b;
+  color: var(--c-danger);
   word-break: break-all;
 }
 
@@ -2271,8 +2332,8 @@ async function run() {
   border-radius: 2px;
   background: linear-gradient(
     90deg,
-    rgba(242, 255, 89, 0.72) 0,
-    rgba(242, 255, 89, 0.72) calc(12px + (100% - 24px) * var(--slider-ratio, 0)),
+    color-mix(in srgb, var(--accent-yellow) 72%, transparent) 0,
+    color-mix(in srgb, var(--accent-yellow) 72%, transparent) calc(12px + (100% - 24px) * var(--slider-ratio, 0)),
     var(--c-line) calc(12px + (100% - 24px) * var(--slider-ratio, 0)),
     var(--c-line) 100%
   );
@@ -2298,7 +2359,7 @@ async function run() {
 .panel-slider input[type="range"]::-moz-range-progress {
   height: 4px;
   border-radius: 2px;
-  background: rgba(242, 255, 89, 0.72);
+  background: color-mix(in srgb, var(--accent-yellow) 72%, transparent);
 }
 
 .panel-slider input[type="range"]::-moz-range-thumb {
@@ -2323,7 +2384,7 @@ async function run() {
   padding: 0 1px;
   border-radius: 50%;
   background: var(--accent-yellow);
-  color: #17171a;
+  color: var(--c-on-accent);
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -2331,7 +2392,7 @@ async function run() {
   overflow: hidden;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 2px 8px var(--c-shadow);
 }
 
 /* 开关：与输入框同高的胶囊式滑块 */
@@ -2369,7 +2430,7 @@ async function run() {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #8b8b93;
+  background: var(--c-muted-2);
   transition: transform 0.18s ease, background 0.18s ease;
 }
 
@@ -2380,7 +2441,7 @@ async function run() {
 
 .panel-switch.is-on .switch-thumb {
   transform: translateX(24px);
-  background: #1b1b1f;
+  background: var(--c-on-accent);
 }
 
 .panel-switch input:focus-visible + .switch-track {
@@ -2419,13 +2480,13 @@ async function run() {
 
 .panel-dice:hover {
   color: var(--c-text);
-  border-color: #4a4a58;
+  border-color: var(--c-border-strong);
 }
 
 .panel-dice.is-on {
   border-color: var(--c-accent);
   color: var(--c-accent);
-  background: rgba(242, 255, 89, 0.1);
+  background: var(--c-accent-weak);
 }
 
 .media-audio {
@@ -2448,7 +2509,7 @@ async function run() {
   height: 100%;
   font-size: 10px;
   color: var(--c-muted);
-  background: #222;
+  background: var(--c-surface-3);
 }
 
 /* 视频封面还没生成时的占位块 */
@@ -2459,7 +2520,7 @@ async function run() {
   height: 100%;
   font-size: 14px;
   color: var(--c-muted);
-  background: #222;
+  background: var(--c-surface-3);
 }
 
 .panel-row {
@@ -2514,7 +2575,7 @@ async function run() {
   border: 1px solid var(--accent-yellow);
   border-radius: 999px;
   background: var(--accent-yellow);
-  color: #17171a;
+  color: var(--c-on-accent);
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
@@ -2524,19 +2585,19 @@ async function run() {
 }
 
 .panel-run:hover {
-  box-shadow: 0 0 0 3px rgba(242, 255, 89, 0.18);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-accent) 18%, transparent);
 }
 
 /* 中断态：同色系描边，红色只留给错误提示 */
 .panel-run.is-stop {
   background: transparent;
-  color: var(--accent-yellow);
-  box-shadow: inset 0 0 0 1px var(--accent-yellow);
+  color: var(--c-accent);
+  box-shadow: inset 0 0 0 1px var(--c-accent);
 }
 
 .panel-run.is-stop:hover {
-  background: rgba(242, 255, 89, 0.12);
-  box-shadow: inset 0 0 0 1px var(--accent-yellow);
+  background: var(--c-accent-weak);
+  box-shadow: inset 0 0 0 1px var(--c-accent);
 }
 
 .panel-run:disabled {

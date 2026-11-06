@@ -111,11 +111,41 @@
         <circle cx="8" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.6" />
       </svg>
     </button>
+
+    <button
+      class="tb-btn"
+      type="button"
+      :title="isLight ? '暗色模式' : '亮色模式'"
+      @click="toggleTheme"
+    >
+      <svg v-if="isLight" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+        <path
+          d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5a8.5 8.5 0 1 0 11.7 11.7z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <svg v-else viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6" />
+        <path
+          d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
+      </svg>
+    </button>
   </div>
 </template>
 
 <script setup>
+import { useTheme } from "../../composables/useTheme.js";
+
 const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
+const { isLight, toggleTheme } = useTheme();
 </script>
 
 <style scoped>
@@ -131,8 +161,8 @@ const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
   transform: translateX(-50%);
   border: 1px solid var(--c-line);
   border-radius: 14px;
-  background: rgba(24, 24, 30, 0.92);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  background: color-mix(in srgb, var(--c-surface) 92%, transparent);
+  box-shadow: 0 10px 28px var(--c-shadow);
   backdrop-filter: blur(10px);
 }
 
@@ -144,13 +174,13 @@ const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: #cfcfd6;
+  color: var(--c-text);
   transition: background 0.15s, color 0.15s;
 }
 
 .tb-btn:hover {
-  background: #26262f;
-  color: #fff;
+  background: var(--c-hover);
+  color: var(--c-strong-text);
 }
 
 .tb-btn:active {

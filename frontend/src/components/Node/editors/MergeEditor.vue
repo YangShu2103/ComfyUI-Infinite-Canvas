@@ -286,7 +286,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--accent-yellow);
   background: var(--accent-yellow);
-  color: #14140f;
+  color: var(--c-on-accent);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -306,7 +306,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  background: #14141a;
+  background: var(--c-surface);
   user-select: none;
   touch-action: none;
 }
@@ -318,9 +318,9 @@ onBeforeUnmount(() => {
 .merge-cell {
   position: relative;
   overflow: hidden;
-  border: 1px dashed #33333d;
+  border: 1px dashed var(--c-border-strong);
   box-sizing: border-box;
-  background: #1a1a21;
+  background: var(--c-surface-2);
 }
 
 .merge-cell.has-image {

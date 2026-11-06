@@ -164,7 +164,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--accent-yellow);
   background: var(--accent-yellow);
-  color: #14140f;
+  color: var(--c-on-accent);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -184,7 +184,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   border-radius: 12px;
-  background: #14141a;
+  background: var(--c-surface);
 }
 
 .split-wrap {

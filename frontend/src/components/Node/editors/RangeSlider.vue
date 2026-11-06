@@ -77,7 +77,7 @@ function onInput(event) {
   height: 6px;
   transform: translateY(-50%);
   border-radius: 3px;
-  background: #3b3b46;
+  background: color-mix(in srgb, var(--c-text) 22%, transparent);
   overflow: hidden;
 }
 
@@ -126,7 +126,7 @@ function onInput(event) {
   transform: translate(-0px, -50%);
   border-radius: 50%;
   background: var(--accent-yellow);
-  color: #101014;
+  color: var(--c-on-accent);
   font-size: 10px;
   font-weight: 600;
   pointer-events: none;

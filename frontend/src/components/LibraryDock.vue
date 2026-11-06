@@ -511,24 +511,24 @@ function placePreview(width, height, ready) {
   gap: 6px;
   height: 30px;
   padding: 0 14px;
-  border: 1px solid #3d3d4a;
+  border: 1px solid var(--c-line-strong);
   border-radius: 999px;
-  background: rgba(28, 28, 35, 0.92);
-  color: #b9b9c4;
+  background: var(--c-surface);
+  color: var(--c-text);
   font-size: 12px;
   cursor: pointer;
   transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
 }
 
 .lib-tab:hover {
-  color: var(--c-text, #e6e6ea);
-  border-color: #5a5a6a;
+  color: var(--c-text);
+  border-color: var(--c-border-strong);
 }
 
 .lib-tab.is-active {
-  border-color: var(--accent-yellow, #f2ff59);
-  background: rgba(242, 255, 89, 0.12);
-  color: var(--accent-yellow, #f2ff59);
+  border-color: var(--c-accent);
+  background: var(--c-accent-weak);
+  color: var(--c-accent-ink);
 }
 
 .library-panel {
@@ -538,10 +538,10 @@ function placePreview(width, height, ready) {
   width: min(340px, 34vw);
   min-height: 0;
   overflow: hidden;
-  border: 1px solid #3a3a46;
+  border: 1px solid var(--c-line-strong);
   border-radius: 14px;
-  background: rgba(24, 24, 30, 0.96);
-  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  background: var(--c-surface);
+  box-shadow: 0 20px 48px var(--c-shadow);
   pointer-events: auto;
 }
 
@@ -566,13 +566,13 @@ function placePreview(width, height, ready) {
 }
 
 .lib-title {
-  color: var(--c-text, #e6e6ea);
+  color: var(--c-text);
   font-size: 13px;
   font-weight: 600;
 }
 
 .lib-count {
-  color: #82828e;
+  color: var(--c-muted);
   font-size: 11px;
 }
 
@@ -582,7 +582,7 @@ function placePreview(width, height, ready) {
   margin-left: auto;
   padding: 2px;
   border-radius: 8px;
-  background: #23232c;
+  background: var(--c-surface-3);
 }
 
 .lib-switch button {
@@ -591,14 +591,14 @@ function placePreview(width, height, ready) {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #92929e;
+  color: var(--c-muted);
   font-size: 11px;
   cursor: pointer;
 }
 
 .lib-switch button.is-active {
-  background: #34343f;
-  color: var(--c-text, #e6e6ea);
+  background: var(--c-surface);
+  color: var(--c-text);
 }
 
 .lib-cats {
@@ -611,24 +611,24 @@ function placePreview(width, height, ready) {
 .lib-cat {
   height: 24px;
   padding: 0 12px;
-  border: 1px solid #34343f;
+  border: 1px solid var(--c-line);
   border-radius: 999px;
   background: transparent;
-  color: #92929e;
+  color: var(--c-muted);
   font-size: 11px;
   cursor: pointer;
   transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
 
 .lib-cat:hover {
-  color: var(--c-text, #e6e6ea);
-  border-color: #4a4a58;
+  color: var(--c-text);
+  border-color: var(--c-border-strong);
 }
 
 .lib-cat.is-active {
-  border-color: rgba(242, 255, 89, 0.6);
-  background: rgba(242, 255, 89, 0.12);
-  color: var(--accent-yellow, #f2ff59);
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+  background: var(--c-accent-weak);
+  color: var(--c-accent-ink);
 }
 
 .lib-add {
@@ -643,10 +643,10 @@ function placePreview(width, height, ready) {
   min-height: 52px;
   max-height: 96px;
   padding: 8px;
-  border: 1px solid #3a3a46;
+  border: 1px solid var(--c-line-strong);
   border-radius: 8px;
-  background: #1d1d24;
-  color: var(--c-text, #e6e6ea);
+  background: var(--c-surface-3);
+  color: var(--c-text);
   font-size: 12px;
   line-height: 1.5;
   resize: vertical;
@@ -654,7 +654,7 @@ function placePreview(width, height, ready) {
 }
 
 .lib-add-input:focus {
-  border-color: var(--accent-yellow, #f2ff59);
+  border-color: var(--c-accent);
 }
 
 .lib-add-btn {
@@ -662,10 +662,10 @@ function placePreview(width, height, ready) {
   align-self: flex-end;
   height: 26px;
   padding: 0 12px;
-  border: 1px solid var(--accent-yellow, #f2ff59);
+  border: 1px solid var(--accent-yellow);
   border-radius: 7px;
-  background: var(--accent-yellow, #f2ff59);
-  color: #17171c;
+  background: var(--accent-yellow);
+  color: var(--c-on-accent);
   font-size: 12px;
   cursor: pointer;
 }
@@ -688,23 +688,23 @@ function placePreview(width, height, ready) {
 .prompt-item {
   position: relative;
   padding: 9px 28px 9px 10px;
-  border: 1px solid #34343f;
+  border: 1px solid var(--c-line);
   border-radius: 10px;
-  background: #22222a;
+  background: var(--c-surface);
   cursor: pointer;
   transition: border-color 0.16s ease, background 0.16s ease;
 }
 
 .prompt-item:hover {
-  border-color: rgba(242, 255, 89, 0.55);
-  background: #272730;
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+  background: var(--c-surface-3);
 }
 
 .prompt-text {
   margin: 0;
   display: -webkit-box;
   overflow: hidden;
-  color: #d7d7de;
+  color: var(--c-text);
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -723,15 +723,15 @@ function placePreview(width, height, ready) {
   border: 0;
   border-radius: 50%;
   background: transparent;
-  color: #82828e;
+  color: var(--c-muted);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
 }
 
 .item-del:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ff8f8f;
+  background: color-mix(in srgb, var(--c-text) 8%, transparent);
+  color: var(--c-danger);
 }
 
 .asset-grid {
@@ -750,14 +750,14 @@ function placePreview(width, height, ready) {
   /* 用 padding-top 撑正方形：grid 自动行高不认 aspect-ratio，行会被压矮导致方块互相压盖 */
   padding-top: 100%;
   overflow: hidden;
-  border: 1px solid #34343f;
+  border: 1px solid var(--c-line);
   border-radius: 9px;
-  background: #1d1d24;
+  background: var(--c-surface-2);
   cursor: grab;
 }
 
 .asset-cell:hover {
-  border-color: rgba(242, 255, 89, 0.55);
+  border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
 }
 
 .asset-cell img {
@@ -774,7 +774,7 @@ function placePreview(width, height, ready) {
   inset: 0;
   display: grid;
   place-items: center;
-  color: #82828e;
+  color: var(--c-muted);
   font-size: 11px;
   letter-spacing: 0.04em;
 }
@@ -786,7 +786,7 @@ function placePreview(width, height, ready) {
   bottom: 0;
   padding: 10px 5px 4px;
   overflow: hidden;
-  color: #dcdce3;
+  color: #f4f4f8;
   font-size: 10px;
   text-align: center;
   text-overflow: ellipsis;
@@ -817,7 +817,7 @@ function placePreview(width, height, ready) {
 .lib-empty {
   grid-column: 1 / -1;
   margin: 18px 0;
-  color: #6f6f7b;
+  color: var(--c-muted-2);
   font-size: 12px;
   text-align: center;
 }
@@ -825,7 +825,7 @@ function placePreview(width, height, ready) {
 .lib-more {
   grid-column: 1 / -1;
   margin: 4px 0 8px;
-  color: #6f6f7b;
+  color: var(--c-muted-2);
   font-size: 11px;
   text-align: center;
 }
@@ -833,8 +833,8 @@ function placePreview(width, height, ready) {
 .lib-foot {
   flex: 0 0 auto;
   padding: 8px 12px 10px;
-  border-top: 1px solid #2c2c36;
-  color: #82828e;
+  border-top: 1px solid var(--c-line);
+  color: var(--c-muted);
   font-size: 11px;
   line-height: 1.4;
 }
@@ -844,10 +844,10 @@ function placePreview(width, height, ready) {
   position: fixed;
   z-index: 40;
   overflow: hidden;
-  border: 1px solid #3c3c48;
+  border: 1px solid var(--c-line-strong);
   border-radius: 14px;
-  background: #14141a;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+  background: var(--c-surface);
+  box-shadow: 0 18px 44px var(--c-shadow);
   pointer-events: none;
 }
 
@@ -864,7 +864,7 @@ function placePreview(width, height, ready) {
   place-items: center;
   width: 100%;
   height: 100%;
-  color: #b9b9c4;
+  color: var(--c-muted);
   font-size: 13px;
 }
 
