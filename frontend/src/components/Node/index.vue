@@ -124,14 +124,28 @@
         />
       </div>
     </div>
-    <div
-      v-else-if="!showProgress"
-      class="node-empty"
-      title="点击上传图片 / 视频 / 音频"
-      @mousedown="onEmptyMouseDown"
-      @click.stop="onEmptyClick"
-    >
-      拖入文件或点击上传图片 / 视频 / 音频
+    <div v-else-if="!showProgress" class="node-empty">
+      <!-- 只有这块虚线区域是上传热区，点节点其他地方只做选中/展开面板 -->
+      <button
+        class="node-upload"
+        type="button"
+        title="点击上传图片 / 视频 / 音频"
+        @mousedown="onEmptyMouseDown"
+        @click.stop="onEmptyClick"
+      >
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path
+            d="M12 16V4M7.5 8.5L12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <span>点击上传图片 / 视频 / 音频</span>
+        <span class="node-upload-hint">也可以直接拖入文件</span>
+      </button>
     </div>
 
     <!-- 空节点点击时的系统文件选择框，上传后直接追加到本节点 -->
@@ -1695,25 +1709,48 @@ async function run() {
   background: var(--c-accent);
 }
 
-/* 空节点占位 */
+/* 空节点占位：整块只是布局容器，虚线框才是上传热区 */
 .node-empty {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.node-upload {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 16px;
   border: 1px dashed var(--c-line);
-  border-radius: 14px;
+  border-radius: 10px;
+  background: transparent;
   color: var(--c-muted);
   font-size: 12px;
+  line-height: 1.3;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
-.node-empty:hover {
+/* 鼠标进入节点任意位置就提示这里是上传热区，不用精确移到按钮上 */
+.demo-node:hover .node-upload,
+.node-upload:hover {
   border-color: color-mix(in srgb, var(--c-accent) 45%, var(--c-line));
   background: var(--c-accent-weak);
   color: var(--c-text);
+}
+
+.node-upload svg {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+.node-upload-hint {
+  font-size: 11px;
+  color: var(--c-muted);
 }
 
 /* 空节点点击上传用的隐藏 file input */

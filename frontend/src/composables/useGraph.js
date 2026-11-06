@@ -201,10 +201,11 @@ export function useGraph() {
     nodeSeq += 1;
     const id = String(nodeSeq);
     nodes.value = [
-      ...nodes.value,
+      ...nodes.value.map((node) => (node.selected ? { ...node, selected: false } : node)),
       {
         id,
         type: "demo",
+        selected: true,
         position: {
           x: Math.round(position.x - NODE_WIDTH / 2),
           y: Math.round(position.y - 36),
@@ -212,6 +213,11 @@ export function useGraph() {
         data: baseData(`${nodeSeq}`),
       },
     ];
+    // 新建后立即选中并展开参数面板，不用再点一下
+    nextTick(() => {
+      const created = flow.getNodes.value.find((node) => node.id === id);
+      if (created) flow.addSelectedNodes([created]);
+    });
     return id;
   }
 
