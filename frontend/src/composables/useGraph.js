@@ -830,8 +830,8 @@ export function useGraph() {
   function onDblClick(event) {
     // 双击节点时不要新建
     if (event.target.closest(".vue-flow__node")) return;
-    // 右上角的资产库/提示词面板是画布内的浮层，双击它也不该新建节点
-    if (event.target.closest(".library-dock")) return;
+    // 画布内的浮层（资产库面板、底部工具栏、右下角菜单）双击都不该新建节点
+    if (event.target.closest(".library-dock, .canvas-tabbar, .canvas-menu")) return;
     addNode(flow.screenToFlowCoordinate({ x: event.clientX, y: event.clientY }));
   }
 

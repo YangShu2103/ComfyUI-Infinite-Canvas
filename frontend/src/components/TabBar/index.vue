@@ -111,41 +111,11 @@
         <circle cx="8" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.6" />
       </svg>
     </button>
-
-    <button
-      class="tb-btn"
-      type="button"
-      :title="isLight ? '暗色模式' : '亮色模式'"
-      @click="toggleTheme"
-    >
-      <svg v-if="isLight" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
-        <path
-          d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5a8.5 8.5 0 1 0 11.7 11.7z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linejoin="round"
-        />
-      </svg>
-      <svg v-else viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
-        <circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6" />
-        <path
-          d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-        />
-      </svg>
-    </button>
   </div>
 </template>
 
 <script setup>
-import { useTheme } from "../../composables/useTheme.js";
-
 const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
-const { isLight, toggleTheme } = useTheme();
 </script>
 
 <style scoped>

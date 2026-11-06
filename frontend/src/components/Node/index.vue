@@ -73,7 +73,7 @@
           <div v-else-if="item.kind === 'audio'" class="media-audio-thumb">音频</div>
           <img
             v-else
-            :src="displaySrc(item)"
+            :src="cardSrc(item)"
             :alt="item.name"
             draggable="false"
             loading="lazy"
@@ -750,6 +750,13 @@ function onThumbError(item) {
   if (key) thumbFails[key] = true;
 }
 
+// 节点卡片会随缩放放大，单独要更高清的一档（1280）；素材条仍用默认 640 省流量
+function cardSrc(item) {
+  const url = displaySrc(item);
+  if (!url || !item || !item.ref) return url;
+  return url.replace(/([?&]size=)\d+/, "$11280");
+}
+
 // 展示用地址：优先后端缩略图，失败或无引用（本地 blob）时用原图
 function displaySrc(item) {
   if (!item) return "";
@@ -760,7 +767,8 @@ function displaySrc(item) {
 // 视频封面地址：只认服务端缩略图，拿不到就返回空串（由模板渲染占位块）
 function videoThumb(item) {
   if (!item || !item.thumbUrl) return "";
-  return thumbFails[mediaKey(item)] ? "" : item.thumbUrl;
+  if (thumbFails[mediaKey(item)]) return "";
+  return cardSrc(item);
 }
 
 // 预览气泡用：视频只给封面，图片给缩略图（失败时退回原图）

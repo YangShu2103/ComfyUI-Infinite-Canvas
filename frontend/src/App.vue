@@ -35,6 +35,9 @@
         @assets="openDialog('assets')"
         @workflow="openDialog('workflow')"
       />
+
+      <!-- 右下角：主题切换 / 退出画布 -->
+      <CanvasMenu />
     </div>
 
     <component v-for="dialog in dialogs" :is="dialog.component" :key="dialog.key" />
@@ -48,6 +51,7 @@ import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
 import CanvasEdge from "./components/Edge/index.vue";
 import TabBar from "./components/TabBar/index.vue";
+import CanvasMenu from "./components/CanvasMenu.vue";
 import LibraryDock from "./components/LibraryDock.vue";
 import { dialogs, openDialog, closeAllDialogs } from "./stores/dialogs.js";
 import { useGraph } from "./composables/useGraph.js";

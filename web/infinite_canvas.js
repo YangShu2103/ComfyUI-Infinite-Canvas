@@ -86,31 +86,10 @@ function injectStyles() {
   overflow: hidden;
   background: var(--comfy-menu-bg, #202020);
 }
-#${MODAL_ID} .ic-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex: 0 0 auto;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color, #333);
-  color: var(--input-text, #e0e0e0);
-  font-size: 14px;
-  font-weight: 600;
-}
-#${MODAL_ID} .ic-close {
-  padding: 2px 8px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-#${MODAL_ID} .ic-close:hover { background: rgba(255, 255, 255, 0.1); }
 #${MODAL_ID} .ic-frame {
   flex: 1 1 auto;
   width: 100%;
+  height: 100%;
   border: 0;
   background: #181818;
 }
@@ -138,22 +117,28 @@ function closeModal() {
   if (frame) frame.src = "about:blank";
 }
 
+// 画布内的右下角菜单点「退出画布」时通知这里关闭弹窗
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) return;
+  if (!event.data || event.data.type !== "infinite-canvas:close") return;
+  closeModal();
+});
+
 function buildModal() {
   const overlay = document.createElement("div");
   overlay.id = MODAL_ID;
   overlay.innerHTML = `
 <div class="ic-panel">
-  <div class="ic-header">
-    <span>Infinite-Canvas</span>
-    <button class="ic-close" type="button" title="关闭">&times;</button>
-  </div>
   <iframe class="ic-frame" title="Infinite-Canvas" src="about:blank"></iframe>
 </div>`;
 
-  overlay.querySelector(".ic-close").addEventListener("click", closeModal);
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) closeModal();
   });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.classList.contains("ic-open")) closeModal();
+  });
+
   document.body.appendChild(overlay);
   return overlay;
 }

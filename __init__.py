@@ -298,9 +298,9 @@ def _list_assets(kind):
 # 拖出画布时前端仍然用原图引用（/view），缩略图只影响面板里的展示。
 
 _THUMB_SIZE = 320
-# 允许的缩略图档位：资产库网格用 320，节点卡片放大后要更清晰就用 640/960
-_THUMB_SIZES = (320, 640, 960)
-_THUMB_QUALITY = 72
+# 允许的缩略图档位：资产库网格用 320，素材条用 640，节点卡片放大后要更清晰就用 960/1280
+_THUMB_SIZES = (320, 640, 960, 1280)
+_THUMB_QUALITY = 80
 _THUMB_MAX_BYTES = 200 * 1024 * 1024
 _THUMB_MAX_FILES = 10000
 _THUMB_PRUNE_INTERVAL = 60
@@ -1243,7 +1243,7 @@ def register_routes(app):
         except OSError:
             return web.json_response({"error": "读取素材失败"}, status=404)
 
-        # 尺寸档位：只接受 320 / 640 / 960，避免被拿来做任意尺寸的图片服务
+        # 尺寸档位：只接受 320 / 640 / 960 / 1280，避免被拿来做任意尺寸的图片服务
         try:
             wanted = int(request.query.get("size", _THUMB_SIZE))
         except (TypeError, ValueError):
