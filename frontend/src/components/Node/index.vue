@@ -158,6 +158,32 @@
       @change="onFilesPicked"
     />
 
+    <!-- 生成中：沿边框绘制的真实任务进度（ComfyUI 采样步数），未收到进度前显示不定态流动 -->
+    <svg
+      v-if="runState?.status === 'running'"
+      class="node-ring"
+      :class="{ 'is-indeterminate': !ringHasProgress }"
+      aria-hidden="true"
+    >
+      <rect
+        class="node-ring-track"
+        width="100%"
+        height="100%"
+        rx="19"
+        ry="19"
+        pathLength="100"
+      />
+      <rect
+        class="node-ring-bar"
+        width="100%"
+        height="100%"
+        rx="19"
+        ry="19"
+        pathLength="100"
+        :style="ringStyle"
+      />
+    </svg>
+
     <!-- 运行态：整体流光背景 + 上下布局（图标在上，文字在下），不显示假百分比 -->
     <div
       v-if="showProgress"
@@ -1083,12 +1109,31 @@ const queuedTitle = computed(() => {
   return position > 0 ? `队列第 ${position} 位` : "排队中";
 });
 
-// 排队/等待/运行都只显示状态 + 计时，不给不可信的百分比
+// 边框进度条：用 ComfyUI 当前采样节点的真实步数（value / max）驱动
+const ringPercent = computed(() => {
+  const max = Number(runState.value?.stepMax) || 0;
+  if (max <= 0) return 0;
+  const value = Math.min(Number(runState.value?.stepValue) || 0, max);
+  return Math.max(0, Math.min(100, Math.round((value / max) * 100)));
+});
+// 还没收到 progress 事件（排队/加载模型阶段）时先显示不定态流动
+const ringHasProgress = computed(() => (Number(runState.value?.stepMax) || 0) > 0);
+const ringStyle = computed(() => {
+  if (!ringHasProgress.value) return {};
+  // pathLength=100 把整圈归一化成 100，虚线长度即百分比，与节点尺寸无关
+  return { strokeDasharray: `${ringPercent.value} ${100 - ringPercent.value}` };
+});
+
+// 排队/等待/运行都只显示状态 + 计时，运行中额外显示真实步数
 const progressSub = computed(() => {
   if (!elapsedText.value) return "";
-  return runState.value?.status === "queued" || runState.value?.status === "waiting"
-    ? `已等 ${elapsedText.value}`
-    : `已用 ${elapsedText.value}`;
+  const waiting =
+    runState.value?.status === "queued" || runState.value?.status === "waiting";
+  const parts = [waiting ? `已等 ${elapsedText.value}` : `已用 ${elapsedText.value}`];
+  if (runState.value?.status === "running" && ringHasProgress.value) {
+    parts.push(`${runState.value.stepValue}/${runState.value.stepMax}`);
+  }
+  return parts.join(" · ");
 });
 
 function onRunClick() {
@@ -1766,6 +1811,54 @@ async function run() {
   display: none;
 }
 
+/* 生成中：沿边框绘制的任务进度环 */
+.node-ring {
+  position: absolute;
+  inset: 0;
+  /* 绝对定位的 SVG 是替换元素，必须显式给宽高，否则会退回 300×150 的默认尺寸 */
+  width: 100%;
+  height: 100%;
+  z-index: 12;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.node-ring rect {
+  fill: none;
+  stroke-width: 3;
+}
+
+/* 底层常亮的细环，作为进度槽 */
+.node-ring-track {
+  stroke: color-mix(in srgb, var(--c-accent) 20%, transparent);
+}
+
+/* 进度段：stroke-dasharray 由组件按百分比写入（pathLength=100 → 单位就是百分比） */
+.node-ring-bar {
+  stroke: var(--c-accent);
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--c-accent) 70%, transparent));
+  transition: stroke-dasharray 0.35s ease-out;
+}
+
+/* 还没收到真实进度时：一小段光带绕圈，表示"已开始但进度未知" */
+.node-ring.is-indeterminate .node-ring-bar {
+  stroke-dasharray: 14 86;
+  animation: node-ring-flow 1.4s linear infinite;
+}
+
+@keyframes node-ring-flow {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-ring.is-indeterminate .node-ring-bar {
+    animation: none;
+  }
+}
+
 /* 运行态：不铺满颜色，只在中心做一层缓慢呼吸的黄色光晕 */
 .node-progress {
   position: absolute;
@@ -1825,7 +1918,7 @@ async function run() {
   font-weight: 600;
   color: var(--c-text);
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 2px 10px var(--c-text-halo);
 }
 
 .node-progress-label.is-error {
@@ -1875,9 +1968,8 @@ async function run() {
   font-variant-numeric: tabular-nums;
   text-align: center;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  /* 不能加 overflow:hidden：它会把 text-shadow 裁在盒内，形成一圈边界锐利的暗块 */
+  text-shadow: 0 1px 5px var(--c-text-halo);
 }
 
 /* Alt/Option 拖动时的虚拟副本：跟随光标，不参与任何命中检测 */
@@ -2641,16 +2733,18 @@ async function run() {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-accent) 18%, transparent);
 }
 
-/* 中断态：同色系描边，红色只留给错误提示 */
+/* 中断态：切到危险色，和「运行」一眼区分 */
 .panel-run.is-stop {
+  /* 基础样式的边框是强调黄，这里必须一起换掉，否则红环外面还套一圈黄边 */
+  border-color: var(--c-danger);
   background: transparent;
-  color: var(--c-accent);
-  box-shadow: inset 0 0 0 1px var(--c-accent);
+  color: var(--c-danger);
 }
 
 .panel-run.is-stop:hover {
-  background: var(--c-accent-weak);
-  box-shadow: inset 0 0 0 1px var(--c-accent);
+  background: var(--c-danger-soft);
+  /* 基础 :hover 的光晕是强调黄，这里换成同色系红晕 */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-danger) 20%, transparent);
 }
 
 .panel-run:disabled {

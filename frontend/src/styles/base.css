@@ -35,6 +35,8 @@
   --c-editor-outline: rgba(255, 255, 255, 0.45);
   --c-editor-handle: #ffffff;
   --c-shadow: rgba(0, 0, 0, 0.45);
+  /* 叠在图片上的文字描边光：暗色主题用深色投影压住亮图 */
+  --c-text-halo: rgba(0, 0, 0, 0.6);
   --c-backdrop: rgba(14, 14, 19, 0.82);
 }
 
@@ -72,6 +74,8 @@ html[data-theme="light"] {
   --c-editor-outline: rgba(0, 0, 0, 0.7);
   --c-editor-handle: #111318;
   --c-shadow: rgba(30, 30, 45, 0.14);
+  /* 亮色主题下文字本身就是深色，改用浅色光晕托底 */
+  --c-text-halo: rgba(255, 255, 255, 0.9);
   --c-backdrop: rgba(28, 32, 40, 0.35);
 }
 

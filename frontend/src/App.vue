@@ -126,7 +126,11 @@ function rememberNode(event) {
 
 function focusLastNode() {
   closeAllDialogs();
-  focusNode(lastNodeId.value);
+  // 优先定位正在运行的节点（多个时取最后开始的），没有运行中的再回退到最近点过的节点
+  const running = Object.keys(runStates).filter(
+    (id) => runStates[id]?.status === "running" && nodes.value.some((node) => node.id === id)
+  );
+  focusNode(running.length ? running[running.length - 1] : lastNodeId.value);
 }
 
 function fitCanvasView() {

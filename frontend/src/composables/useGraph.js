@@ -5,6 +5,8 @@ import { useVueFlow } from "@vue-flow/core";
 // 这样跑出 16:9 的图时节点尺寸不会再跳动
 const NODE_WIDTH = 454;
 const NODE_HEIGHT = 226;
+// 纵向排布间距：给节点悬停操作条留出空间，上下游节点、粘贴副本都用这个间距
+const NODE_GAP_Y = 72;
 // 内容区相对节点外框的内缩：左右/上下各 10px 内边距 + 1px 边框
 const NODE_PADDING = 22;
 const MAX_NODE_H = 900;
@@ -553,18 +555,11 @@ export function useGraph() {
     return true;
   }
 
-  // 在源节点右侧找一个空位：间距为半个节点宽，并跳过所有已有节点占用的区域，
-  // 这样同一个节点多次运行时下游会依次向右排开，也不会压住放大过的上游节点
-  function placeRightOf(source) {
-    const gap = NODE_WIDTH / 2;
-    const width = NODE_WIDTH;
-    const height = NODE_HEIGHT;
-    const sourceW = Math.max(NODE_WIDTH, Number(source.data?.w) || NODE_WIDTH);
-    const y = Math.round(source.position.y);
-    let x = Math.round(source.position.x + sourceW + gap);
-
+  // 从 (x, y) 开始往下找一块没被占用的空位：命中已有节点就整块往下挪一行，
+  // skipId 用于跳过发起这次排布的那个节点本身
+  function placeClearBelow(x, y, width, height, skipId = null) {
     const hit = (node) => {
-      if (node.id === source.id) return false;
+      if (node.id === skipId) return false;
       const w = Math.max(NODE_WIDTH, Number(node.data?.w) || NODE_WIDTH);
       const h = Math.max(NODE_HEIGHT, Number(node.data?.h) || NODE_HEIGHT);
       const nx = Number(node.position?.x) || 0;
@@ -572,12 +567,23 @@ export function useGraph() {
       return x < nx + w && nx < x + width && y < ny + h && ny < y + height;
     };
     for (let guard = 0; guard < 200 && nodes.value.some(hit); guard += 1) {
-      x += width + gap;
+      y += height + NODE_GAP_Y;
     }
+    return y;
+  }
+
+  // 下游节点的落位：第一个紧贴源节点右侧，之后在同一列里往下排开。
+  // 横向一直排会把画布拉成一条长龙，纵向一列更像"同一个节点的多次产出"。
+  // 依然做占用检测，避免压住放大过的上游节点或已有节点
+  function placeChildOf(source) {
+    const gap = NODE_WIDTH / 2;
+    const sourceW = Math.max(NODE_WIDTH, Number(source.data?.w) || NODE_WIDTH);
+    const x = Math.round(source.position.x + sourceW + gap);
+    const y = placeClearBelow(x, Math.round(source.position.y), NODE_WIDTH, NODE_HEIGHT, source.id);
     return { x, y };
   }
 
-  // 以当前节点为输入，在它右侧派生一个下游节点：自动连线 + 继承自身媒体
+  // 以当前节点为输入派生一个下游节点（右侧一列，自动向下排开）：自动连线 + 继承自身媒体
   // items 为新节点自身的首批素材（运行产物）
   function spawnChildNode(sourceId, items = []) {
     const source = nodes.value.find((item) => item.id === sourceId);
@@ -585,7 +591,7 @@ export function useGraph() {
 
     // 继承的素材在创建时就带上，避免新建后再改 data 被 v-model 同步覆盖
     const inherited = (source.data.media || []).map((item) => ({ ...item, sourceId }));
-    const slot = placeRightOf(source);
+    const slot = placeChildOf(source);
 
     nodeSeq += 1;
     const id = String(nodeSeq);
@@ -1112,11 +1118,10 @@ export function useGraph() {
   }
 
   // ------------------------------------------------------------ 复制 / 粘贴
-  // Ctrl/Cmd + C 记住选中的节点（支持多选），Ctrl/Cmd + V 在右下方错开生成副本。
+  // Ctrl/Cmd + C 记住选中的节点（支持多选），Ctrl/Cmd + V 在下方空白处生成副本。
   // 与 Alt 拖拽复制不同：这里不复制上游连线，也不带上游媒体，
   // 选中节点之间的内部连线会一起复制
   let clipboard = null;
-  let pasteStep = 0;
 
   function copySelection() {
     const selected = flow.getSelectedNodes?.value || [];
@@ -1160,7 +1165,6 @@ export function useGraph() {
           targetHandle: edge.targetHandle || null,
         })),
     };
-    pasteStep = 0;
     return clipboard.nodes.length;
   }
 
@@ -1168,8 +1172,24 @@ export function useGraph() {
     if (!clipboard || !clipboard.nodes.length) return 0;
 
     captureUndo(true);
-    pasteStep += 1;
-    const offset = 40 * pasteStep;
+    // 和下游节点同一套落位逻辑：整块选区往下找一块没被占用的空位，避免盖住已有节点
+    const box = clipboard.nodes.reduce(
+      (acc, entry) => {
+        const w = Math.max(NODE_WIDTH, Number(entry.data?.w) || NODE_WIDTH);
+        const h = Math.max(NODE_HEIGHT, Number(entry.data?.h) || NODE_HEIGHT);
+        return {
+          minX: Math.min(acc.minX, entry.position.x),
+          minY: Math.min(acc.minY, entry.position.y),
+          maxX: Math.max(acc.maxX, entry.position.x + w),
+          maxY: Math.max(acc.maxY, entry.position.y + h),
+        };
+      },
+      { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+    );
+    const boxW = box.maxX - box.minX;
+    const boxH = box.maxY - box.minY;
+    const top = placeClearBelow(box.minX, box.minY + boxH + NODE_GAP_Y, boxW, boxH);
+    const offsetY = top - box.minY;
     const created = [];
     const idMap = new Map();
 
@@ -1181,7 +1201,7 @@ export function useGraph() {
         id,
         type: "demo",
         selected: true,
-        position: { x: entry.position.x + offset, y: entry.position.y + offset },
+        position: { x: entry.position.x, y: entry.position.y + offsetY },
         data: {
           ...baseData(`${nodeSeq}`),
           ...JSON.parse(JSON.stringify(entry.data)),
@@ -1324,6 +1344,30 @@ export function useGraph() {
     };
   }
 
+  // 从进度消息里取出"当前正在采样"的那个节点的步数。
+  // 不能把所有节点的 max/value 加起来：模型加载之类的节点也会报 max=1/value=1，
+  // 采样还没开始就会算出 100%
+  function readProgress(data) {
+    const nodes = data?.nodes;
+    if (nodes && typeof nodes === "object") {
+      // max > 1 才是多步采样；max = 1 的节点（加载模型等）不参与进度计算
+      const list = Object.values(nodes).filter((item) => Number(item?.max) > 1);
+      const active =
+        list.find((item) => item?.state === "running") ||
+        list.find((item) => {
+          const value = Number(item?.value) || 0;
+          return value > 0 && value < Number(item?.max);
+        });
+      if (!active) return null;
+      const max = Number(active.max) || 0;
+      return { value: Math.min(Number(active.value) || 0, max), max };
+    }
+    const max = Number(data?.max) || 0;
+    // max 只有 1 的多半是"加载模型 / 处理一张图"这类一次性节点，拿它当进度会瞬间 100%
+    if (max <= 1) return null;
+    return { value: Math.min(Number(data?.value) || 0, max), max };
+  }
+
   // 进度百分比来自采样步数，加载模型/解码阶段没有事件，容易长时间停在 0%，
   // 因此界面上不做进度估算，只显示状态 + 计时（见 Node/index.vue）
   function onSocketMessage(event) {
@@ -1344,9 +1388,16 @@ export function useGraph() {
 
     if (message.type === "execution_start") {
       state.status = "running";
+      state.stepValue = 0;
+      state.stepMax = 0;
     } else if (message.type === "progress" || message.type === "progress_state") {
-      // 只用来确认任务确实在跑；不换算成百分比（阶段划分不可靠）
       state.status = "running";
+      // 只记录当前采样节点的步数：多采样器串联时进度会从头开始，但这就是真实进度
+      const step = readProgress(data);
+      if (step) {
+        state.stepValue = step.value;
+        state.stepMax = step.max;
+      }
     } else if (message.type === "execution_success") {
       checkPrompt(nodeId, promptId);
     } else if (message.type === "execution_interrupted") {
@@ -1492,6 +1543,9 @@ export function useGraph() {
       status: "queued",
       error: "",
       position: 0,
+      // 当前采样节点的真实步数（ComfyUI 的 value / max），没收到进度事件前都是 0
+      stepValue: 0,
+      stepMax: 0,
       promptId,
       // 从提交开始计时（排队时间也算），界面显示已等/已用时长
       startedAt: Date.now(),

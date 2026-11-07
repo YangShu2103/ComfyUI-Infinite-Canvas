@@ -3,7 +3,7 @@
     <button
       class="tb-btn tb-btn--primary"
       type="button"
-      title="聚焦节点（恢复默认缩放并居中）"
+      title="聚焦节点（优先定位正在运行的节点，否则回到上次选择的节点）"
       @click="emit('focus')"
     >
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
