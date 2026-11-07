@@ -594,11 +594,14 @@ const deleteStyle = computed(() => ({
   right: `${-17 * deleteScale.value}px`,
 }));
 
-// 节点尺寸：每个节点单独记忆（存进画布 JSON 的 data.w / data.h），最小为初始大小
+// 节点尺寸：每个节点单独记忆（存进画布 JSON 的 data.w / data.h）；
+// 默认 454×226，素材卡片区域正好是 16:9；最小宽度 400、最小高度 225
 const MIN_NODE_W = 400;
-const MIN_NODE_H = 260;
-const nodeW = computed(() => Math.max(MIN_NODE_W, Number(props.data.w) || MIN_NODE_W));
-const nodeH = computed(() => Math.max(MIN_NODE_H, Number(props.data.h) || MIN_NODE_H));
+const MIN_NODE_H = 225;
+const DEFAULT_NODE_W = 454;
+const DEFAULT_NODE_H = 226;
+const nodeW = computed(() => Math.max(MIN_NODE_W, Number(props.data.w) || DEFAULT_NODE_W));
+const nodeH = computed(() => Math.max(MIN_NODE_H, Number(props.data.h) || DEFAULT_NODE_H));
 
 let resizeSession = null;
 
@@ -1515,8 +1518,8 @@ async function run() {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: 400px;
-  height: 260px;
+  width: 454px;
+  height: 226px;
   padding: 10px;
   border: 1px solid var(--c-line);
   border-radius: 20px;
@@ -1573,6 +1576,8 @@ async function run() {
   border-color: transparent;
 }
 
+/* 素材卡片按内容区大小自适应，用 cover 铺满卡片；单个素材时卡片比例已经
+   按图片算过，不会裁切，多张不同比例时宁可轻微裁切也不留白 */
 .media-stack-card img,
 .media-stack-card video {
   width: 100%;

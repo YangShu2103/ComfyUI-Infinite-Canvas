@@ -1,8 +1,20 @@
 import { nextTick, onScopeDispose, reactive, ref, watch } from "vue";
 import { useVueFlow } from "@vue-flow/core";
 
-const NODE_WIDTH = 400;
-const NODE_HEIGHT = 260;
+// 默认节点按 16:9 出图：宽度 454、高度 226，使素材卡片区域（内容区 × 84%）正好 16:9，
+// 这样跑出 16:9 的图时节点尺寸不会再跳动
+const NODE_WIDTH = 454;
+const NODE_HEIGHT = 226;
+// 内容区相对节点外框的内缩：左右/上下各 10px 内边距 + 1px 边框
+const NODE_PADDING = 22;
+const MAX_NODE_H = 900;
+// 自适应尺寸的容忍比例：分辨率按 8/16/32 对齐会让比例有 1% 左右的偏差，
+// 差在 2% 以内视为同一比例，不调整节点尺寸；16:10、4:3 这类真实差异仍会生效
+const FIT_TOLERANCE_RATIO = 0.02;
+const FIT_TOLERANCE_MIN = 3;
+// 节点里当前素材卡片只占内容区宽度的 84%（两侧留出堆叠卡片的错位空间），
+// 自适应尺寸要按卡片实际显示区域算，否则图片会被居中裁切
+const CARD_WIDTH_RATIO = 0.84;
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 0.7 };
 
 // ComfyUI 的 /view 地址：素材存在 input 目录，产物存在 output 目录，前端只存引用
@@ -421,6 +433,59 @@ export function useGraph() {
       });
   }
 
+  // ------------------------------------------------------------ 节点自适应尺寸
+  // 让「素材实际显示区域」（84% 宽度 × 内容区高度）严格等于图片宽高比：
+  // 以节点当前宽度为基准算高度，高度落在 [225, 900] 之间；
+  // 宽幅图算出来低于最小高度时，反过来补足宽度，保证不裁切也不留黑边
+  function measureImage(url) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  async function fitNodeToFirstImage(nodeId, items) {
+    const first = (items || []).find((item) => item && item.kind === "image" && (item.thumbUrl || item.url));
+    if (!first) return false;
+    let size = await measureImage(first.thumbUrl || first.url);
+    // 缩略图还没生成 / 生成失败时退回原图测比例
+    if (!size && first.thumbUrl && first.url) size = await measureImage(first.url);
+    if (!size || !size.w || !size.h) return false;
+    // 图片加载期间节点可能已被删除
+    const node = nodes.value.find((item) => item.id === nodeId);
+    if (!node) return false;
+
+    const ratio = size.h / size.w;
+    let width = Math.max(NODE_WIDTH, Number(node.data.w) || NODE_WIDTH);
+    // 卡片宽度只有内容区的 84%，按这个宽度算高度才能保证卡片区域正好是图片比例
+    let height = Math.round(NODE_PADDING + (width - NODE_PADDING) * CARD_WIDTH_RATIO * ratio);
+
+    if (height > MAX_NODE_H) {
+      // 超长竖图：高度封顶，宽度保持不缩
+      height = MAX_NODE_H;
+    } else if (height < NODE_HEIGHT) {
+      // 宽幅图：保持最小高度，反过来补足宽度
+      height = NODE_HEIGHT;
+      width = Math.round((height - NODE_PADDING) / (CARD_WIDTH_RATIO * ratio) + NODE_PADDING);
+    }
+
+    const nextWidth = Math.max(NODE_WIDTH, width);
+    const curWidth = Number(node.data.w) || NODE_WIDTH;
+    const curHeight = Number(node.data.h) || NODE_HEIGHT;
+    const widthTolerance = Math.max(FIT_TOLERANCE_MIN, curWidth * FIT_TOLERANCE_RATIO);
+    const heightTolerance = Math.max(FIT_TOLERANCE_MIN, curHeight * FIT_TOLERANCE_RATIO);
+    if (Math.abs(nextWidth - curWidth) <= widthTolerance && Math.abs(height - curHeight) <= heightTolerance) {
+      return false;
+    }
+
+    node.data.w = nextWidth;
+    node.data.h = height;
+    return true;
+  }
+
+
   // 一次拖入的多个文件放进同一个节点，节点内用堆叠卡片切换
   // 先把本地占位塞进节点（立刻可见），上传在后台跑，卡片上显示进度
   function addMediaNode(position, files) {
@@ -450,6 +515,8 @@ export function useGraph() {
     nodes.value
       .find((node) => node.id === id)
       ?.data.media.forEach((item) => runUpload(item).catch(() => {}));
+    // 拖入多张时以第一张的宽高比撑开节点，避免竖图显示不全
+    fitNodeToFirstImage(id, media);
     return id;
   }
 
@@ -462,9 +529,12 @@ export function useGraph() {
     if (!node) return false;
     captureUndo();
     const media = node.data.media || [];
+    const wasEmpty = !media.length;
     node.data.media = [...media, ...items];
-    if (!media.length) node.data.index = 0;
+    if (wasEmpty) node.data.index = 0;
     node.data.media.slice(media.length).forEach((item) => runUpload(item).catch(() => {}));
+    // 只有在节点本来是空的时候才按这批素材的第一次比例定尺寸
+    if (wasEmpty) fitNodeToFirstImage(nodeId, items);
     return true;
   }
 
@@ -475,9 +545,36 @@ export function useGraph() {
     const node = nodes.value.find((item) => item.id === nodeId);
     if (!node) return false;
     const media = node.data.media || [];
+    const wasEmpty = !media.length;
     node.data.media = [...media, ...items];
-    if (!media.length) node.data.index = 0;
+    if (wasEmpty) node.data.index = 0;
+    // 空节点落首个产物时按它的比例定尺寸；已有素材时保持原有比例不变
+    if (wasEmpty) fitNodeToFirstImage(nodeId, items);
     return true;
+  }
+
+  // 在源节点右侧找一个空位：间距为半个节点宽，并跳过所有已有节点占用的区域，
+  // 这样同一个节点多次运行时下游会依次向右排开，也不会压住放大过的上游节点
+  function placeRightOf(source) {
+    const gap = NODE_WIDTH / 2;
+    const width = NODE_WIDTH;
+    const height = NODE_HEIGHT;
+    const sourceW = Math.max(NODE_WIDTH, Number(source.data?.w) || NODE_WIDTH);
+    const y = Math.round(source.position.y);
+    let x = Math.round(source.position.x + sourceW + gap);
+
+    const hit = (node) => {
+      if (node.id === source.id) return false;
+      const w = Math.max(NODE_WIDTH, Number(node.data?.w) || NODE_WIDTH);
+      const h = Math.max(NODE_HEIGHT, Number(node.data?.h) || NODE_HEIGHT);
+      const nx = Number(node.position?.x) || 0;
+      const ny = Number(node.position?.y) || 0;
+      return x < nx + w && nx < x + width && y < ny + h && ny < y + height;
+    };
+    for (let guard = 0; guard < 200 && nodes.value.some(hit); guard += 1) {
+      x += width + gap;
+    }
+    return { x, y };
   }
 
   // 以当前节点为输入，在它右侧派生一个下游节点：自动连线 + 继承自身媒体
@@ -488,8 +585,7 @@ export function useGraph() {
 
     // 继承的素材在创建时就带上，避免新建后再改 data 被 v-model 同步覆盖
     const inherited = (source.data.media || []).map((item) => ({ ...item, sourceId }));
-    // 同一个节点多次运行时，依次向下排开，避免新节点叠在一起
-    const childCount = edges.value.filter((edge) => edge.source === sourceId).length;
+    const slot = placeRightOf(source);
 
     nodeSeq += 1;
     const id = String(nodeSeq);
@@ -498,10 +594,7 @@ export function useGraph() {
       {
         id,
         type: "demo",
-        position: {
-          x: Math.round(source.position.x + NODE_WIDTH + 80),
-          y: Math.round(source.position.y + childCount * (NODE_HEIGHT + 40)),
-        },
+        position: slot,
         data: {
           ...baseData(`${nodeSeq}`),
           // 生成参数沿用上游节点
@@ -516,6 +609,7 @@ export function useGraph() {
     ];
 
     addEdge(sourceId, null, id, null);
+    if (items.length) fitNodeToFirstImage(id, items);
     return id;
   }
 
@@ -991,6 +1085,9 @@ export function useGraph() {
           workflow: source.data.workflow || defaultWorkflow(),
           params: JSON.parse(JSON.stringify(source.data.params || {})),
           randomFields: JSON.parse(JSON.stringify(source.data.randomFields || {})),
+          // 副本沿用原节点拖过的尺寸，不再退回默认的 400×260
+          w: source.data.w,
+          h: source.data.h,
           // 素材沿用引用，但 id 要重新生成，避免和原节点在同一目标节点上被去重；
           // 还在上传的素材保留原 id，上传落定后按 id 把引用同步到副本
           media: (source.data.media || []).map((item) => ({
@@ -1536,6 +1633,7 @@ export function useGraph() {
         },
       },
     ];
+    fitNodeToFirstImage(id, [item]);
     return id;
   }
 
@@ -1563,6 +1661,8 @@ export function useGraph() {
         },
       },
     ];
+    // 资产拖进画布：按第一张素材的比例撑开节点
+    fitNodeToFirstImage(id, items);
     return id;
   }
 
