@@ -1,9 +1,12 @@
 import { ref } from "vue";
 
 // 右上角「提示词 / 资产库」面板与节点提示词框之间共享的状态
-// 模块级单例：App 挂面板，Node 只需要登记插入目标
+// 模块级单例：App 挂面板，Node 只需要登记自己能接收提示词
 const panel = ref(null); // "prompt" | "asset" | null
-const promptTarget = ref(null); // { nodeId, insert(text) }
+// 面板打开（选中）的节点各自的写入通道：nodeId -> { insert(text, useCaret), isActive() }
+const targets = new Map();
+// 给面板底部提示用：当前有多少个节点可以接收提示词
+const targetCount = ref(0);
 
 // 从资产库拖进画布时用的私有类型，避免和系统文件、节点素材混淆
 export const FILE_ASSET_DRAG_TYPE = "application/x-infinite-canvas-file-asset";
@@ -21,18 +24,47 @@ export function useLibrary() {
     panel.value = panel.value === name ? null : name;
   }
 
-  function setPromptTarget(target) {
-    promptTarget.value = target;
+  // 节点面板展开时登记，收起/卸载时注销
+  function registerTarget(nodeId, target) {
+    targets.set(nodeId, target);
+    targetCount.value = targets.size;
   }
 
-  // 点条目时插入到最近编辑的提示词框；没有目标时保持面板打开并返回 false
-  function insertPrompt(text) {
-    const target = promptTarget.value;
-    if (!target || !text) return false;
-    target.insert(text);
-    panel.value = null;
-    return true;
+  function unregisterTarget(nodeId) {
+    if (!targets.delete(nodeId)) return;
+    targetCount.value = targets.size;
   }
 
-  return { panel, promptTarget, open, close, toggle, setPromptTarget, insertPrompt };
+  // 点条目：有聚焦的提示词框就按光标插入（全选时即整体替换），
+  // 否则把提示词追加到所有面板打开的节点；一个都没选中时复制到剪贴板
+  async function insertPrompt(text) {
+    if (!text) return "";
+    if (!targets.size) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return "copied";
+      } catch {
+        return "failed";
+      }
+    }
+    const active = [...targets.values()].find((target) => target.isActive?.());
+    if (active) {
+      active.insert(text, true);
+    } else {
+      targets.forEach((target) => target.insert(text, false));
+    }
+    // 面板保持打开，方便连续插入
+    return "inserted";
+  }
+
+  return {
+    panel,
+    targetCount,
+    open,
+    close,
+    toggle,
+    registerTarget,
+    unregisterTarget,
+    insertPrompt,
+  };
 }

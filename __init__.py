@@ -245,6 +245,7 @@ def _load_prompt_library():
         items.append(
             {
                 "id": str(entry.get("id") or uuid.uuid4().hex),
+                "name": str(entry.get("name", "") or "").strip(),
                 "text": text,
                 "created": int(entry.get("created") or 0),
             }
@@ -1320,12 +1321,36 @@ def register_routes(app):
         text = str(payload.get("text", "") or "").strip()
         if not text:
             return web.json_response({"error": "提示词不能为空"}, status=400)
+        name = str(payload.get("name", "") or "").strip()[:60]
 
         items = _load_prompt_library()
         # 已收藏过同样的内容就不再重复添加
         if not any(item["text"] == text for item in items):
-            items.insert(0, {"id": uuid.uuid4().hex, "text": text, "created": int(time.time())})
+            items.insert(
+                0,
+                {
+                    "id": uuid.uuid4().hex,
+                    "name": name,
+                    "text": text,
+                    "created": int(time.time()),
+                },
+            )
             _save_prompt_library(items)
+        return web.json_response({"prompts": items})
+
+    async def rename_prompt(request):
+        entry_id = request.match_info.get("entry_id", "")
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+        name = str(payload.get("name", "") or "").strip()[:60]
+        items = _load_prompt_library()
+        for item in items:
+            if item["id"] == entry_id:
+                item["name"] = name
+                break
+        _save_prompt_library(items)
         return web.json_response({"prompts": items})
 
     async def delete_prompt(request):
@@ -1705,6 +1730,7 @@ def register_routes(app):
             web.post(f"{API_PREFIX}/library/delete", delete_assets),
             web.get(f"{API_PREFIX}/library/prompts", list_prompts),
             web.post(f"{API_PREFIX}/library/prompts", add_prompt),
+            web.patch(f"{API_PREFIX}/library/prompts/{{entry_id}}", rename_prompt),
             web.delete(f"{API_PREFIX}/library/prompts/{{entry_id}}", delete_prompt),
             web.get(f"{API_PREFIX}/workflows/{{name}}", get_workflow),
             web.delete(f"{API_PREFIX}/workflows/{{name}}", delete_workflow),

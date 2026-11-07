@@ -44,32 +44,38 @@
             <span class="lib-count">{{ prompts.length }} 条</span>
           </header>
 
-          <div class="lib-add">
-            <textarea
-              v-model="draft"
-              class="lib-add-input"
-              rows="2"
-              placeholder="输入要收藏的提示词…"
-              spellcheck="false"
-              @keydown.enter.prevent="addPrompt"
-            />
-            <button
-              class="lib-add-btn"
-              type="button"
-              :disabled="!draft.trim() || saving"
-              @click="addPrompt"
-            >
-              {{ saving ? "保存中" : "收藏" }}
-            </button>
-          </div>
-
           <div class="lib-list">
             <article
               v-for="item in prompts"
               :key="item.id"
               class="prompt-item"
-              @click="insertPrompt(item.text)"
+              @click="onPromptClick(item)"
+              @mousedown="onItemMouseDown"
             >
+              <div class="prompt-name-row">
+                <input
+                  v-if="editingId === item.id"
+                  ref="nameInputEl"
+                  v-model="nameDraft"
+                  class="prompt-name-input"
+                  maxlength="60"
+                  placeholder="未命名"
+                  spellcheck="false"
+                  @click.stop
+                  @keydown.enter.prevent="$event.target.blur()"
+                  @keydown.esc.prevent="cancelRename($event)"
+                  @blur="saveName(item)"
+                />
+                <button
+                  v-else
+                  class="prompt-name"
+                  type="button"
+                  :title="item.name || '未命名'"
+                  @click.stop="startRename(item)"
+                >
+                  {{ item.name || "未命名" }}
+                </button>
+              </div>
               <p class="prompt-text">{{ item.text }}</p>
               <button class="item-del" type="button" title="删除" @click.stop="removePrompt(item)">
                 ×
@@ -78,8 +84,39 @@
             <p v-if="!prompts.length" class="lib-empty">还没有收藏的提示词</p>
           </div>
 
+          <!-- 底部收藏框：上方名称、下方内容，收藏按钮压在文本框右下角 -->
+          <div class="lib-compose">
+            <div class="compose-box">
+              <input
+                v-model="draftName"
+                class="compose-name"
+                maxlength="60"
+                placeholder="未命名"
+                spellcheck="false"
+              />
+              <div class="compose-text-wrap">
+                <textarea
+                  v-model="draft"
+                  class="compose-text"
+                  placeholder="输入要收藏的提示词…"
+                  spellcheck="false"
+                  @keydown.ctrl.enter.prevent="addPrompt"
+                  @keydown.meta.enter.prevent="addPrompt"
+                />
+                <button
+                  class="compose-save"
+                  type="button"
+                  :disabled="!draft.trim() || saving"
+                  @click="addPrompt"
+                >
+                  {{ saving ? "保存中" : "收藏" }}
+                </button>
+              </div>
+            </div>
+          </div>
+
           <footer class="lib-foot">
-            {{ promptTarget ? "点击条目插入到当前提示词框" : "先点到节点的提示词框，再点条目插入" }}
+            {{ copyTip || footerHint }}
           </footer>
         </template>
 
@@ -198,14 +235,41 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { FILE_ASSET_DRAG_TYPE, useLibrary } from "../composables/useLibrary.js";
 
-const { panel, promptTarget, toggle, insertPrompt } = useLibrary();
+const { panel, targetCount, toggle, insertPrompt } = useLibrary();
+
+const footerHint = computed(() => {
+  if (!targetCount.value) return "未选中节点时，点击条目会复制到剪贴板";
+  if (targetCount.value === 1) return "点击条目插入到选中的节点（框内全选可整段替换）";
+  return `点击条目会同时插入到选中的 ${targetCount.value} 个节点`;
+});
+
+// 没有可写入的节点时，点击条目复制到剪贴板，底部短暂提示一下
+const copyTip = ref("");
+let copyTimer = 0;
+
+async function onPromptClick(item) {
+  const result = await insertPrompt(item.text);
+  if (result !== "copied" && result !== "failed") return;
+  copyTip.value = result === "copied" ? "已复制到剪贴板" : "复制失败，请手动选择文本";
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => {
+    copyTip.value = "";
+  }, 1600);
+}
+
+onBeforeUnmount(() => clearTimeout(copyTimer));
 
 const prompts = ref([]);
+const draftName = ref("");
 const draft = ref("");
 const saving = ref(false);
+// 正在重命名的那条提示词，以及输入框里的临时名称
+const editingId = ref("");
+const nameDraft = ref("");
+const nameInputEl = ref(null);
 
 const kind = ref("input");
 // 二级分类：全部 / 图片 / 音频 / 视频
@@ -258,15 +322,60 @@ async function addPrompt() {
     const response = await fetch("/infinite_canvas/api/library/prompts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ name: draftName.value.trim(), text }),
     });
     const data = await response.json();
     if (data.prompts) prompts.value = data.prompts;
     draft.value = "";
+    draftName.value = "";
   } catch {
     // 接口不可用时保留输入内容，等下次重试
   } finally {
     saving.value = false;
+  }
+}
+
+// 点条目时不让提示词框失焦，否则拿不到光标/选区，"全选后替换整段"就失效了；
+// 重命名输入框里要允许鼠标选词，单独放过
+function onItemMouseDown(event) {
+  if (event.target.closest(".prompt-name-input")) return;
+  event.preventDefault();
+}
+
+// 点名称进入重命名；名称区域在整卡片里，必须阻止冒泡，否则会触发"插入提示词"
+async function startRename(item) {
+  editingId.value = item.id;
+  nameDraft.value = item.name || "";
+  await nextTick();
+  const el = Array.isArray(nameInputEl.value) ? nameInputEl.value[0] : nameInputEl.value;
+  el?.focus();
+  el?.select();
+}
+
+function cancelRename(event) {
+  editingId.value = "";
+  event.target.blur();
+}
+
+// 失焦自动保存；名称没变就不发请求
+async function saveName(item) {
+  if (editingId.value !== item.id) return;
+  editingId.value = "";
+  const name = nameDraft.value.trim();
+  if (name === (item.name || "")) return;
+  try {
+    const response = await fetch(
+      `/infinite_canvas/api/library/prompts/${encodeURIComponent(item.id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      }
+    );
+    const data = await response.json();
+    if (data.prompts) prompts.value = data.prompts;
+  } catch {
+    // 改名失败保持原样，下次打开面板会重新拉取
   }
 }
 
@@ -631,21 +740,51 @@ function placePreview(width, height, ready) {
   color: var(--c-accent-ink);
 }
 
-.lib-add {
-  display: flex;
-  gap: 8px;
-  padding: 0 12px 10px;
+/* 底部收藏框：一个整框装名称 + 内容 */
+.lib-compose {
   flex: 0 0 auto;
+  padding: 0 12px 10px;
 }
 
-.lib-add-input {
-  flex: 1 1 auto;
-  min-height: 52px;
-  max-height: 96px;
-  padding: 8px;
+.compose-box {
   border: 1px solid var(--c-line-strong);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--c-surface-3);
+  overflow: hidden;
+  transition: border-color 0.16s ease;
+}
+
+.compose-box:focus-within {
+  border-color: var(--c-accent);
+}
+
+.compose-name {
+  display: block;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--c-line);
+  background: transparent;
+  color: var(--c-text);
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.compose-text-wrap {
+  position: relative;
+}
+
+.compose-text {
+  display: block;
+  width: 100%;
+  min-height: 74px;
+  max-height: 180px;
+  /* 给右下角的收藏按钮留出位置，长文本不会压到按钮下面 */
+  padding: 8px 10px 34px;
+  border: 0;
+  background: transparent;
   color: var(--c-text);
   font-size: 12px;
   line-height: 1.5;
@@ -653,15 +792,12 @@ function placePreview(width, height, ready) {
   outline: none;
 }
 
-.lib-add-input:focus {
-  border-color: var(--c-accent);
-}
-
-.lib-add-btn {
-  flex: 0 0 auto;
-  align-self: flex-end;
-  height: 26px;
-  padding: 0 12px;
+.compose-save {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  height: 24px;
+  padding: 0 10px;
   border: 1px solid var(--accent-yellow);
   border-radius: 7px;
   background: var(--accent-yellow);
@@ -670,7 +806,7 @@ function placePreview(width, height, ready) {
   cursor: pointer;
 }
 
-.lib-add-btn:disabled {
+.compose-save:disabled {
   opacity: 0.45;
   cursor: default;
 }
@@ -698,6 +834,44 @@ function placePreview(width, height, ready) {
 .prompt-item:hover {
   border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
   background: var(--c-surface-3);
+}
+
+.prompt-name-row {
+  margin-bottom: 4px;
+  min-height: 18px;
+}
+
+.prompt-name {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-text);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: text;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.prompt-name:hover {
+  color: var(--c-accent-ink);
+}
+
+.prompt-name-input {
+  width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--c-accent);
+  border-radius: 6px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
 }
 
 .prompt-text {

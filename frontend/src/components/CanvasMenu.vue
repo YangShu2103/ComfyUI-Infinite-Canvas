@@ -155,7 +155,8 @@ onBeforeUnmount(() => {
   position: absolute;
   right: 18px;
   bottom: 16px;
-  z-index: 7;
+  /* 层级要低于右侧面板（资产库 z=6 / 提示词面板），避免挡住面板内容 */
+  z-index: 4;
 }
 
 .cm-fab {

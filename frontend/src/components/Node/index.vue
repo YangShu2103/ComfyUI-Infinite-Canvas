@@ -377,7 +377,6 @@
             :readonly="!data.workflow"
             spellcheck="false"
             @input="onPromptInput"
-            @focus="registerPromptTarget"
             @keydown.stop
           />
         </div>
@@ -1343,8 +1342,8 @@ const promptField = computed(
 const promptDraft = ref("");
 const promptEl = ref(null);
 
-// 提示词框的插入目标：输入 @ / 打开面板后，点面板条目会插到光标处
-const { open: openLibrary, setPromptTarget } = useLibrary();
+// 提示词框的插入目标：面板展开的节点都能接收，多选时一次写给所有节点
+const { open: openLibrary, registerTarget, unregisterTarget } = useLibrary();
 
 function promptText() {
   return promptField.value ? valueOf(promptField.value) : promptDraft.value;
@@ -1355,18 +1354,37 @@ function writePrompt(text) {
   else promptDraft.value = text;
 }
 
-function registerPromptTarget() {
-  setPromptTarget({ nodeId: props.id, insert: insertIntoPrompt });
-}
+const promptTarget = {
+  // 输入框有焦点时按光标插入，全选后点条目就是整体替换
+  isActive: () => document.activeElement === promptEl.value,
+  insert: insertIntoPrompt,
+};
 
-function insertIntoPrompt(text) {
+// 只给面板展开（选中）的节点登记，取消选中或卸载时注销
+watch(
+  () => props.selected,
+  (value) => {
+    if (value) registerTarget(props.id, promptTarget);
+    else unregisterTarget(props.id);
+  },
+  { immediate: true }
+);
+
+onBeforeUnmount(() => unregisterTarget(props.id));
+
+function insertIntoPrompt(text, useCaret = false) {
   const el = promptEl.value;
-  if (!el) return;
-  const start = el.selectionStart ?? promptText().length;
-  const end = el.selectionEnd ?? start;
   const value = promptText();
+  if (!useCaret) {
+    // 没聚焦时追加到末尾；原有内容不以空白结尾就补一个空格，避免两段粘在一起
+    writePrompt(value && !/\s$/.test(value) ? `${value} ${text}` : `${value}${text}`);
+    return;
+  }
+  const start = el?.selectionStart ?? value.length;
+  const end = el?.selectionEnd ?? start;
   writePrompt(value.slice(0, start) + text + value.slice(end));
   nextTick(() => {
+    if (!el) return;
     const caret = start + text.length;
     el.focus();
     el.setSelectionRange(caret, caret);
@@ -1390,13 +1408,11 @@ function onPromptInput(event) {
       const pos = caret - trigger.length;
       el.setSelectionRange(pos, pos);
     });
-    registerPromptTarget();
     openLibrary(trigger === "@" ? "asset" : "prompt");
     return;
   }
 
   writePrompt(value);
-  registerPromptTarget();
 }
 
 // 其余字段：开关 → 下拉框 → 其他 → 随机数，同组内保持原有顺序
