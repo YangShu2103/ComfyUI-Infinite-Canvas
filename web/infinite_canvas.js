@@ -129,7 +129,12 @@ function buildModal() {
   overlay.id = MODAL_ID;
   overlay.innerHTML = `
 <div class="ic-panel">
-  <iframe class="ic-frame" title="Infinite-Canvas" src="about:blank"></iframe>
+  <iframe
+    class="ic-frame"
+    title="Infinite-Canvas"
+    src="about:blank"
+    allow="clipboard-write; clipboard-read"
+  ></iframe>
 </div>`;
 
   overlay.addEventListener("click", (e) => {

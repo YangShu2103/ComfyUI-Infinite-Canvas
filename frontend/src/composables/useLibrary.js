@@ -11,6 +11,38 @@ const targetCount = ref(0);
 // 从资产库拖进画布时用的私有类型，避免和系统文件、节点素材混淆
 export const FILE_ASSET_DRAG_TYPE = "application/x-infinite-canvas-file-asset";
 
+// 被嵌在 ComfyUI 的 iframe 里时，异步剪贴板 API 可能因权限或焦点被拒，
+// 退回 execCommand + 临时 textarea（点击条目本身是用户手势，仍然有效）
+function legacyCopy(text) {
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.top = "-1000px";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(el);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return legacyCopy(text);
+    }
+  }
+  return legacyCopy(text);
+}
+
 export function useLibrary() {
   function open(name) {
     panel.value = name;
@@ -40,12 +72,7 @@ export function useLibrary() {
   async function insertPrompt(text) {
     if (!text) return "";
     if (!targets.size) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return "copied";
-      } catch {
-        return "failed";
-      }
+      return (await copyText(text)) ? "copied" : "failed";
     }
     const active = [...targets.values()].find((target) => target.isActive?.());
     if (active) {
