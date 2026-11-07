@@ -198,6 +198,7 @@ export function useGraph() {
   }
 
   function addNode(position) {
+    captureUndo();
     nodeSeq += 1;
     const id = String(nodeSeq);
     nodes.value = [
@@ -426,6 +427,7 @@ export function useGraph() {
     const media = filesToPlaceholders(files);
     if (!media.length) return null;
 
+    captureUndo();
     nodeSeq += 1;
     const id = String(nodeSeq);
     nodes.value = [
@@ -458,6 +460,7 @@ export function useGraph() {
 
     const node = nodes.value.find((item) => item.id === nodeId);
     if (!node) return false;
+    captureUndo();
     const media = node.data.media || [];
     node.data.media = [...media, ...items];
     if (!media.length) node.data.index = 0;
@@ -579,7 +582,7 @@ export function useGraph() {
   watch(
     edges,
     (next, prev) => {
-      if (loading) return;
+      if (loading || restoring) return;
       for (const edge of prev || []) {
         if (!next.some((item) => item.id === edge.id)) {
           dropInputMedia(edge.target, edge.source);
@@ -621,76 +624,135 @@ export function useGraph() {
 
   // 自身媒体的 id 序列快照：序列一变就说明被重排/删除/追加，通知下游
   const mediaKeys = new Map();
-  // 每个节点自身素材对应的 input 文件名，节点被删除时用来回收文件
-  const nodeOwnFiles = new Map();
-
-  function ownInputFiles(node) {
-    const names = [];
-    for (const item of node.data.media || []) {
-      const ref = item && item.ref;
-      if (!ref || ref.type !== "input") continue;
-      const filename = String(ref.filename || "");
-      if (filename.startsWith("infinite_canvas_")) names.push(filename);
-    }
-    return names;
-  }
-
-  // 只删仍无人引用的文件：其他节点的 media / inputMedia 里还有同一个引用就保留
-  function releaseInputFiles(filenames) {
-    const used = new Set();
-    for (const node of nodes.value) {
-      for (const item of [...(node.data.media || []), ...(node.data.inputMedia || [])]) {
-        if (item && item.ref && item.ref.filename) used.add(item.ref.filename);
-      }
-    }
-    for (const filename of filenames) {
-      if (used.has(filename)) continue;
-      fetch(`/infinite_canvas/api/media/${encodeURIComponent(filename)}`, {
-        method: "DELETE",
-      }).catch(() => {});
-    }
-  }
 
   function snapshotMediaKeys() {
     mediaKeys.clear();
-    nodeOwnFiles.clear();
     for (const node of nodes.value) {
       mediaKeys.set(node.id, (node.data.media || []).map((item) => item.id).join(","));
-      nodeOwnFiles.set(node.id, ownInputFiles(node));
     }
   }
 
   watch(
     nodes,
     () => {
-      if (loading) return;
+      if (loading || restoring) return;
       const alive = new Set();
       for (const node of nodes.value) {
         alive.add(node.id);
         const key = (node.data.media || []).map((item) => item.id).join(",");
         const prev = mediaKeys.get(node.id);
         mediaKeys.set(node.id, key);
-        nodeOwnFiles.set(node.id, ownInputFiles(node));
         if (prev !== undefined && prev !== key) syncDownstream(node.id);
       }
 
-      // 节点被删掉后清掉快照，并回收它自己的 input 文件
-      let removedFiles = null;
-      for (const id of [...nodeOwnFiles.keys()]) {
-        if (alive.has(id)) continue;
-        const files = nodeOwnFiles.get(id) || [];
-        nodeOwnFiles.delete(id);
-        if (files.length) removedFiles = (removedFiles || []).concat(files);
-      }
+      // 节点被删掉后清掉快照
       for (const id of [...mediaKeys.keys()]) {
         if (!alive.has(id)) mediaKeys.delete(id);
       }
-
-      // 等这一轮下游同步（断线回收 inputMedia）跑完，再确认文件是否真的没人引用
-      if (removedFiles) setTimeout(() => releaseInputFiles(removedFiles), 0);
     },
     { deep: true }
   );
+
+  // ------------------------------------------------------------ 撤销
+  // 快照式撤销：操作前把整张画布（节点结构、节点数据、素材引用）存一份。
+  // 素材只存引用不存文件，删除节点/素材也不回收 input 文件，统一交给资产管理面板处理。
+  const UNDO_LIMIT = 40;
+  let undoStack = [];
+  let undoAt = 0;
+  let restoring = false;
+
+  function cloneMediaList(list) {
+    return (list || [])
+      .filter((item) => item && (item.ref?.filename || item.pending || item.url))
+      .map((item) => JSON.parse(JSON.stringify(stripMediaItem(item))));
+  }
+
+  function snapshotGraph() {
+    return {
+      seq: { node: nodeSeq, edge: edgeSeq },
+      nodes: nodes.value.map((node) => {
+        const { media, inputMedia, ...rest } = node.data || {};
+        return {
+          id: node.id,
+          type: node.type || "demo",
+          position: {
+            x: Math.round(node.position?.x || 0),
+            y: Math.round(node.position?.y || 0),
+          },
+          data: {
+            ...JSON.parse(JSON.stringify(rest)),
+            media: cloneMediaList(media),
+            inputMedia: cloneMediaList(inputMedia),
+          },
+        };
+      }),
+      edges: edges.value.map((edge) => ({
+        id: edge.id,
+        type: edge.type || "canvas",
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle || null,
+        targetHandle: edge.targetHandle || null,
+      })),
+    };
+  }
+
+  // force = true 用于明确的一次性操作（切换工作流、粘贴），不受输入合并窗口影响
+  function captureUndo(force = false) {
+    if (restoring || loading) return;
+    const now = Date.now();
+    // 连续输入（提示词、滑块、数字框）合并成一步，避免每敲一个字都压一份
+    if (!force && now - undoAt < 1200) return;
+    undoAt = now;
+    undoStack.push(snapshotGraph());
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  }
+
+  function restoreGraph(snapshot) {
+    restoring = true;
+    const restoredNodes = snapshot.nodes.map((node) => ({
+      id: node.id,
+      type: node.type || "demo",
+      position: { ...node.position },
+      data: {
+        ...JSON.parse(JSON.stringify(node.data)),
+        media: (node.data.media || []).map(hydrateMediaItem),
+        inputMedia: (node.data.inputMedia || []).map(hydrateMediaItem),
+      },
+    }));
+
+    nodes.value = restoredNodes;
+    edges.value = snapshot.edges.map((edge) => ({ ...edge }));
+    nodeSeq = snapshot.seq?.node ?? nodeSeq;
+    edgeSeq = snapshot.seq?.edge ?? edgeSeq;
+    // 直接刷新媒体快照，避免还原这一轮被当成"素材变化"去同步下游
+    snapshotMediaKeys();
+
+    nextTick(() => {
+      restoring = false;
+    });
+  }
+
+  function undo() {
+    if (restoring) return false;
+    const snapshot = undoStack.pop();
+    if (!snapshot) return false;
+
+    // 撤销掉正在运行的节点前先中断，避免任务跑完找不到节点
+    for (const node of nodes.value) {
+      if (!snapshot.nodes.some((item) => item.id === node.id)) abortPrompt(node.id);
+    }
+
+    undoAt = 0;
+    restoreGraph(snapshot);
+    return true;
+  }
+
+  // 切画布时撤销历史作废
+  function flushUndo() {
+    undoStack = [];
+    undoAt = 0;
+  }
 
   // ------------------------------------------------------------ 画布存取
 
@@ -730,6 +792,7 @@ export function useGraph() {
 
   function loadCanvas(canvas) {
     loading = true;
+    flushUndo();
     const loadedNodes = (canvas.nodes || []).map((node) => {
       const data = node.data || {};
       return {
@@ -786,6 +849,7 @@ export function useGraph() {
 
   function resetCanvas() {
     loading = true;
+    flushUndo();
     nodes.value = [];
     edges.value = [];
     nodeSeq = 0;
@@ -843,6 +907,7 @@ export function useGraph() {
 
   function onConnect(connection) {
     justConnected = true;
+    captureUndo(true);
     addEdge(
       connection.source,
       connection.sourceHandle,
@@ -912,6 +977,7 @@ export function useGraph() {
     const source = nodes.value.find((item) => item.id === sourceId);
     if (!source) return null;
 
+    captureUndo(true);
     nodeSeq += 1;
     const id = String(nodeSeq);
     nodes.value = [
@@ -947,6 +1013,152 @@ export function useGraph() {
 
     return id;
   }
+
+  // ------------------------------------------------------------ 复制 / 粘贴
+  // Ctrl/Cmd + C 记住选中的节点（支持多选），Ctrl/Cmd + V 在右下方错开生成副本。
+  // 与 Alt 拖拽复制不同：这里不复制上游连线，也不带上游媒体，
+  // 选中节点之间的内部连线会一起复制
+  let clipboard = null;
+  let pasteStep = 0;
+
+  function copySelection() {
+    const selected = flow.getSelectedNodes?.value || [];
+    if (!selected.length) return 0;
+
+    clipboard = {
+      nodes: selected.map((picked) => {
+        const source = nodes.value.find((node) => node.id === picked.id) || picked;
+        const { media, inputMedia, ...rest } = source.data || {};
+        const data = JSON.parse(JSON.stringify(rest));
+        data.media = (media || []).map((item) => {
+          const clean = stripMediaItem(item);
+          // 还在上传的素材保留原 id，上传落定后按 id 同步到副本
+          if (item.pending || !item.ref) {
+            clean.id = item.id;
+            clean.url = item.url;
+          } else {
+            clean.id = newId();
+          }
+          return clean;
+        });
+        return {
+          from: source.id,
+          position: {
+            x: Math.round(source.position?.x || 0),
+            y: Math.round(source.position?.y || 0),
+          },
+          data,
+        };
+      }),
+      edges: edges.value
+        .filter(
+          (edge) =>
+            selected.some((node) => node.id === edge.source) &&
+            selected.some((node) => node.id === edge.target)
+        )
+        .map((edge) => ({
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle || null,
+          targetHandle: edge.targetHandle || null,
+        })),
+    };
+    pasteStep = 0;
+    return clipboard.nodes.length;
+  }
+
+  function pasteClipboard() {
+    if (!clipboard || !clipboard.nodes.length) return 0;
+
+    captureUndo(true);
+    pasteStep += 1;
+    const offset = 40 * pasteStep;
+    const created = [];
+    const idMap = new Map();
+
+    for (const entry of clipboard.nodes) {
+      nodeSeq += 1;
+      const id = String(nodeSeq);
+      idMap.set(entry.from, id);
+      created.push({
+        id,
+        type: "demo",
+        selected: true,
+        position: { x: entry.position.x + offset, y: entry.position.y + offset },
+        data: {
+          ...baseData(`${nodeSeq}`),
+          ...JSON.parse(JSON.stringify(entry.data)),
+          media: (entry.data.media || []).map(hydrateMediaItem),
+          inputMedia: [],
+        },
+      });
+    }
+
+    // 清掉旧选中，再追加新节点（不要复制节点对象，否则 Vue Flow 会重新测量尺寸）
+    flow.removeSelectedNodes();
+    nodes.value = [...nodes.value, ...created];
+
+    // 内部连线按新 id 重建，并让上游媒体重新同步到下游
+    for (const edge of clipboard.edges || []) {
+      const source = idMap.get(edge.source);
+      const target = idMap.get(edge.target);
+      if (!source || !target) continue;
+      addEdge(source, edge.sourceHandle, target, edge.targetHandle);
+      inheritMedia(source, target);
+    }
+
+    nextTick(() => {
+      const instances = [...idMap.values()]
+        .map((id) => flow.getNodes.value.find((node) => node.id === id))
+        .filter(Boolean);
+      if (instances.length) flow.addSelectedNodes(instances);
+    });
+
+    return created.length;
+  }
+
+  // 输入框里按 Ctrl+C/V 是正常复制文本，不拦截
+  function isTypingTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest(
+      "input, textarea, select, [contenteditable='true'], [contenteditable='']"
+    );
+  }
+
+  function onCopyPasteKey(event) {
+    if (event.defaultPrevented || event.isComposing) return;
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key !== "c" && key !== "v" && key !== "z") return;
+    if (isTypingTarget(event.target)) return;
+
+    if (key === "z") {
+      if (undo()) event.preventDefault();
+      return;
+    }
+    if (key === "c") {
+      if (copySelection()) event.preventDefault();
+      return;
+    }
+    if (pasteClipboard()) event.preventDefault();
+  }
+
+  window.addEventListener("keydown", onCopyPasteKey);
+
+  // Vue Flow 自带的 Backspace / Delete 删除节点不走这里，先抢在它之前存一份快照，
+  // 这样键盘删除也能撤销（监听顺序上我们比 VueFlow 组件先注册）
+  function onDeleteKey(event) {
+    if (event.defaultPrevented || event.isComposing) return;
+    if (event.key !== "Backspace" && event.key !== "Delete") return;
+    if (isTypingTarget(event.target)) return;
+    const selected = flow.getSelectedNodes?.value || [];
+    if (!selected.length) return;
+    captureUndo(true);
+  }
+  window.addEventListener("keydown", onDeleteKey);
+
+  // 拖动开始前存一份位置，拖动结束写回坐标，撤销才能退回原位
+  const offNodeDragStart = flow.onNodeDragStart(() => captureUndo(true));
 
   // 拖动结束后把坐标写回节点数据：Vue Flow 只在内部状态里更新位置，
   // 不写回来导出的画布就还是创建时的坐标
@@ -1235,9 +1447,12 @@ export function useGraph() {
   }
 
   onScopeDispose(() => {
+    window.removeEventListener("keydown", onCopyPasteKey);
+    window.removeEventListener("keydown", onDeleteKey);
     offConnect();
     offConnectStart();
     offConnectEnd();
+    offNodeDragStart();
     offNodeDragStop();
     for (const timer of pollers.values()) clearInterval(timer);
     pollers.clear();
@@ -1266,6 +1481,7 @@ export function useGraph() {
     const source = nodes.value.find((item) => item.id === sourceId);
     if (!source) return null;
 
+    captureUndo(true);
     const x = Math.round(source.position.x + NODE_WIDTH + 80);
     let y = Math.round(source.position.y);
     // 与已有节点重叠时继续向下排开
@@ -1297,6 +1513,7 @@ export function useGraph() {
     const item = source?.data?.media?.[i];
     if (!source || !item) return null;
 
+    captureUndo(true);
     const point = flow.screenToFlowCoordinate({ x: clientX, y: clientY });
     nodeSeq += 1;
     const id = String(nodeSeq);
@@ -1326,6 +1543,7 @@ export function useGraph() {
   function spawnItemsNodeAt(items, clientX, clientY) {
     if (!items || !items.length) return null;
 
+    captureUndo(true);
     const point = flow.screenToFlowCoordinate({ x: clientX, y: clientY });
     nodeSeq += 1;
     const id = String(nodeSeq);
@@ -1346,6 +1564,14 @@ export function useGraph() {
       },
     ];
     return id;
+  }
+
+  // 划线切断连线：一次断多条算一步撤销
+  function cutEdges(ids) {
+    if (!ids || !ids.length) return 0;
+    captureUndo(true);
+    flow.removeEdges(ids);
+    return ids.length;
   }
 
   return {
@@ -1380,5 +1606,8 @@ export function useGraph() {
     resetCanvas,
     focusNode,
     fitCanvas,
+    captureUndo,
+    undo,
+    cutEdges,
   };
 }

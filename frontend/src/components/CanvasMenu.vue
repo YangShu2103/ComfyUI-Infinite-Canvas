@@ -24,6 +24,25 @@
           </svg>
           <span>{{ isLight ? "暗色模式" : "亮色模式" }}</span>
         </button>
+        <button
+          class="cm-item"
+          type="button"
+          title="卸载已加载的模型并清空显存 / 内存缓存"
+          :disabled="freeState === 'busy'"
+          @click="freeMemory"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <rect x="7" y="7" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <path
+              d="M4 10h3M4 14h3M17 10h3M17 14h3M10 4v3M14 4v3M10 17v3M14 17v3"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span>{{ freeLabel }}</span>
+        </button>
         <button class="cm-item is-danger" type="button" @click="exitCanvas">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <path
@@ -54,7 +73,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useTheme } from "../composables/useTheme.js";
 
 const { isLight, toggleTheme } = useTheme();
@@ -62,6 +81,35 @@ const { isLight, toggleTheme } = useTheme();
 const open = ref(false);
 // 被嵌进 ComfyUI 弹窗时通知外层关闭；直接打开页面（本地调试）时退回上一页或 ComfyUI 首页
 const embedded = ref(false);
+
+// 走后端接口（内部转发 ComfyUI 的 POST /free）：本地 vite dev server 下也能用
+const freeState = ref("idle");
+let freeTimer = null;
+const freeLabel = computed(
+  () =>
+    ({
+      idle: "释放显存",
+      busy: "正在释放…",
+      done: "显存已释放",
+      error: "释放失败",
+    })[freeState.value]
+);
+
+async function freeMemory() {
+  if (freeState.value === "busy") return;
+  freeState.value = "busy";
+  clearTimeout(freeTimer);
+  try {
+    const response = await fetch("/infinite_canvas/api/free", { method: "POST" });
+    if (!response.ok) throw new Error(String(response.status));
+    freeState.value = "done";
+  } catch {
+    freeState.value = "error";
+  }
+  freeTimer = setTimeout(() => {
+    freeState.value = "idle";
+  }, 2000);
+}
 
 function switchTheme() {
   toggleTheme();
@@ -98,6 +146,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", closeMenu);
   document.removeEventListener("keydown", onKeydown);
+  clearTimeout(freeTimer);
 });
 </script>
 
@@ -147,7 +196,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 156px;
+  min-width: 160px;
   padding: 5px;
   border: 1px solid var(--c-line);
   border-radius: 10px;
@@ -166,6 +215,7 @@ onBeforeUnmount(() => {
   color: var(--c-text);
   font-size: 13px;
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
@@ -173,6 +223,16 @@ onBeforeUnmount(() => {
 .cm-item:hover {
   background: var(--c-hover);
   color: var(--c-strong-text);
+}
+
+.cm-item:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.cm-item:disabled:hover {
+  background: transparent;
+  color: var(--c-text);
 }
 
 .cm-item.is-danger {

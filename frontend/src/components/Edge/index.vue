@@ -46,8 +46,10 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, useVueFlow } from "@vue-flow/core";
+
+const graph = inject("canvasGraph");
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -104,6 +106,7 @@ function hide() {
 }
 
 function removeEdges(ids) {
+  graph?.captureUndo?.(true);
   flow.removeEdges(ids);
 }
 </script>

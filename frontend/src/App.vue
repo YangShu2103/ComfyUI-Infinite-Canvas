@@ -1,6 +1,7 @@
 <template>
   <div class="page">
     <div
+      ref="wrapEl"
       class="flow-wrap"
       :class="{ 'is-drop-file': dragging }"
       @dblclick.capture="onDblClick"
@@ -8,6 +9,7 @@
       @dragover.prevent="onDragOver"
       @dragleave="onDragLeave"
       @drop.prevent="onDrop"
+      @contextmenu="onContextMenu"
     >
       <VueFlow
         id="demo"
@@ -23,6 +25,16 @@
       >
         <Background :pattern-color="canvasGridColor" :gap="20" />
       </VueFlow>
+
+      <!-- 划线切断连线：按住 Ctrl / Option 在空白处拖出一条红线 -->
+      <svg
+        v-if="cutting"
+        class="cut-layer"
+        :width="cutSize.w"
+        :height="cutSize.h"
+      >
+        <path :d="cutPath" class="cut-line" />
+      </svg>
 
       <!-- 右上角：提示词 / 资产库 面板 -->
       <LibraryDock />
@@ -45,8 +57,8 @@
 </template>
 
 <script setup>
-import { markRaw, onMounted, provide, ref } from "vue";
-import { VueFlow } from "@vue-flow/core";
+import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref } from "vue";
+import { VueFlow, useVueFlow } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
 import CanvasEdge from "./components/Edge/index.vue";
@@ -99,6 +111,9 @@ const {
   resetCanvas,
   focusNode,
   fitCanvas,
+  captureUndo,
+  undo,
+  cutEdges,
 } = useGraph();
 
 // 最近一次点过的节点：纸飞机按钮优先聚焦它（没有点过节点就只是恢复默认视图）
@@ -118,6 +133,241 @@ function fitCanvasView() {
   closeAllDialogs();
   fitCanvas();
 }
+
+// ---------------------------------------------------------------- 划线切断连线
+// 按住 Ctrl / Option 在画布空白处拖拽，红线扫过的连线直接删除。
+// pointerdown 必须挂在捕获阶段，否则 Vue Flow 会先把它当成画布平移
+const flow = useVueFlow("demo");
+const wrapEl = ref(null);
+const cutting = ref(false);
+const cutPoints = ref([]);
+const cutSize = ref({ w: 0, h: 0 });
+let cutRect = { left: 0, top: 0 };
+let cutFrame = 0;
+// 两次重绘之间收到的点先攒在普通数组里，避免每个 pointermove 都触发一次渲染
+let cutPending = [];
+// 一次划线内只需要给所有连线采样一次（期间画布不会平移缩放）
+let cutSamples = [];
+let markedGroups = new Set();
+const CUT_THRESHOLD = 6;
+
+// 用二次贝塞尔把折线磨平：每段以采样点作为控制点、相邻点中点为端点，
+// 拖动快了也能得到一条顺滑的曲线，而不是带棱角的折线
+const cutPath = computed(() => {
+  const points = cutPoints.value;
+  if (points.length < 2) return "";
+  let d = `M${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const midX = (points[i].x + points[i + 1].x) / 2;
+    const midY = (points[i].y + points[i + 1].y) / 2;
+    d += ` Q${points[i].x.toFixed(1)},${points[i].y.toFixed(1)} ${midX.toFixed(1)},${midY.toFixed(1)}`;
+  }
+  const last = points[points.length - 1];
+  d += ` L${last.x.toFixed(1)},${last.y.toFixed(1)}`;
+  return d;
+});
+
+// 节点、面板、输入框上的拖拽不算划线
+function isCutBlocked(target) {
+  if (!(target instanceof Element)) return true;
+  return !!target.closest(
+    ".vue-flow__node, .vue-flow__handle, .library-dock, .canvas-tabbar, .canvas-menu, .node-panel, input, textarea, select, [contenteditable='true']"
+  );
+}
+
+function onCutPointerDown(event) {
+  if (event.button !== 0 || !(event.ctrlKey || event.altKey)) return;
+  const wrap = wrapEl.value;
+  if (!wrap || isCutBlocked(event.target)) return;
+
+  // 拦掉画布平移，也避免选中文本
+  event.preventDefault();
+  event.stopPropagation();
+
+  cutRect = wrap.getBoundingClientRect();
+  cutSize.value = { w: cutRect.width, h: cutRect.height };
+  cutPending = [];
+  cutSamples = buildCutSamples();
+  cutPoints.value = [
+    { x: event.clientX - cutRect.left, y: event.clientY - cutRect.top },
+  ];
+  cutting.value = true;
+  document.body.style.cursor = "crosshair";
+
+  window.addEventListener("pointermove", onCutPointerMove, true);
+  window.addEventListener("pointerup", onCutPointerUp, true);
+  window.addEventListener("keydown", onCutKeyDown, true);
+  window.addEventListener("blur", onCutCancel);
+}
+
+function onCutPointerMove(event) {
+  // 合并掉一帧内的多个事件，点更密也更跟手
+  const batch = event.getCoalescedEvents?.() || [];
+  for (const item of batch.length ? batch : [event]) {
+    const x = item.clientX - cutRect.left;
+    const y = item.clientY - cutRect.top;
+    const last = cutPending[cutPending.length - 1] || cutPoints.value[cutPoints.value.length - 1];
+    if (!last) continue;
+    if (Math.abs(x - last.x) < 1.5 && Math.abs(y - last.y) < 1.5) continue;
+    cutPending.push({ x, y });
+  }
+  if (!cutPending.length) return;
+  if (!cutFrame) cutFrame = requestAnimationFrame(flushCut);
+}
+
+// 每帧只重绘一次曲线，并只用新画出的线段做命中判定
+function flushCut() {
+  cutFrame = 0;
+  if (!cutPending.length) return;
+  const pending = cutPending;
+  cutPending = [];
+  let from = cutPoints.value[cutPoints.value.length - 1];
+  cutPoints.value = cutPoints.value.concat(pending);
+  for (const point of pending) {
+    if (from) testCutSegment(from, point);
+    from = point;
+  }
+}
+
+function distanceToSegment(point, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (!lengthSq) return Math.hypot(point.x - a.x, point.y - a.y);
+  let t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq;
+  t = Math.min(1, Math.max(0, t));
+  return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+}
+
+// 一次划线内把每条连线的路径采样成屏幕坐标点（含包围盒，用于快速排除）
+function buildCutSamples() {
+  const samples = [];
+  const wrap = wrapEl.value;
+  if (!wrap) return samples;
+
+  const zoom = viewport.value.zoom || 1;
+  const offsetX = viewport.value.x || 0;
+  const offsetY = viewport.value.y || 0;
+  const step = Math.max(4 / zoom, 2);
+
+  for (const path of wrap.querySelectorAll(".vue-flow__edge-path")) {
+    const group = path.closest(".vue-flow__edge");
+    const total = path.getTotalLength ? path.getTotalLength() : 0;
+    if (!group || !total) continue;
+
+    const points = [];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let length = 0; length <= total; length += step) {
+      const point = path.getPointAtLength(length);
+      const x = point.x * zoom + offsetX;
+      const y = point.y * zoom + offsetY;
+      points.push({ x, y });
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    samples.push({ group, points, minX, minY, maxX, maxY });
+  }
+  return samples;
+}
+
+// 新线段与已采样连线的最近距离：包围盒先排除，命中就高亮（只加不撤）
+function testCutSegment(a, b) {
+  const minX = Math.min(a.x, b.x) - CUT_THRESHOLD;
+  const minY = Math.min(a.y, b.y) - CUT_THRESHOLD;
+  const maxX = Math.max(a.x, b.x) + CUT_THRESHOLD;
+  const maxY = Math.max(a.y, b.y) + CUT_THRESHOLD;
+
+  for (const entry of cutSamples) {
+    if (markedGroups.has(entry.group)) continue;
+    if (
+      entry.maxX < minX ||
+      entry.minX > maxX ||
+      entry.maxY < minY ||
+      entry.minY > maxY
+    ) continue;
+    for (const point of entry.points) {
+      if (distanceToSegment(point, a, b) <= CUT_THRESHOLD) {
+        entry.group.classList.add("is-cutting");
+        markedGroups.add(entry.group);
+        break;
+      }
+    }
+  }
+}
+
+function stopCutListeners() {
+  window.removeEventListener("pointermove", onCutPointerMove, true);
+  window.removeEventListener("pointerup", onCutPointerUp, true);
+  window.removeEventListener("keydown", onCutKeyDown, true);
+  window.removeEventListener("blur", onCutCancel);
+  if (cutFrame) {
+    cancelAnimationFrame(cutFrame);
+    cutFrame = 0;
+  }
+}
+
+function resetCut() {
+  stopCutListeners();
+  for (const group of markedGroups) group.classList.remove("is-cutting");
+  markedGroups = new Set();
+  cutSamples = [];
+  cutPending = [];
+  cutting.value = false;
+  cutPoints.value = [];
+  document.body.style.cursor = "";
+}
+
+function onCutPointerUp(event) {
+  // 松手前最后一帧的点也要判定，否则末尾一段扫过的连线会漏掉
+  if (cutPending.length) flushCut();
+  stopCutListeners();
+  if (event.button === 0) {
+    const ids = [...markedGroups]
+      .map((group) => group.getAttribute("data-id"))
+      .filter(Boolean);
+    if (ids.length) cutEdges(ids);
+  }
+  resetCut();
+}
+
+function onCutCancel() {
+  resetCut();
+}
+
+function onCutKeyDown(event) {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  resetCut();
+}
+
+// macOS 上 Ctrl + 左键会被当成右键，划线时要把右键菜单压掉
+function onContextMenu(event) {
+  if (event.ctrlKey || event.altKey) event.preventDefault();
+}
+
+// Vue Flow 的画布平移走的是 d3-zoom 的 mousedown，pointerdown 拦不住它
+function onCutMouseDown(event) {
+  if (event.button !== 0 || !(event.ctrlKey || event.altKey)) return;
+  if (isCutBlocked(event.target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+onMounted(() => {
+  wrapEl.value?.addEventListener("pointerdown", onCutPointerDown, true);
+  wrapEl.value?.addEventListener("mousedown", onCutMouseDown, true);
+});
+
+onBeforeUnmount(() => {
+  wrapEl.value?.removeEventListener("pointerdown", onCutPointerDown, true);
+  wrapEl.value?.removeEventListener("mousedown", onCutMouseDown, true);
+  resetCut();
+});
 
 // 节点组件需要往画布上派生节点 / 追加素材，通过 provide 复用同一份图数据
 provide("canvasGraph", {
@@ -140,6 +390,8 @@ provide("canvasGraph", {
   submitExecution,
   trackPrompt,
   abortPrompt,
+  captureUndo,
+  undo,
 });
 
 // 画布管理：列表 / 切换 / 自动保存
@@ -284,5 +536,29 @@ async function onDrop(event) {
   stroke-width: 2.5;
   stroke-dasharray: none;
   filter: drop-shadow(0 0 4px color-mix(in srgb, var(--c-accent) 45%, transparent));
+}
+
+/* 划线切断连线：覆盖层只负责绘制，不拦截任何鼠标事件 */
+.cut-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.cut-line {
+  fill: none;
+  stroke: #ff3b3b;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px rgba(255, 59, 59, 0.55));
+}
+
+/* 拖拽过程中高亮即将被切断的连线 */
+.flow-wrap :deep(.vue-flow__edge.is-cutting .vue-flow__edge-path) {
+  stroke: #ff3b3b;
+  stroke-width: 3;
+  stroke-dasharray: none;
 }
 </style>

@@ -1667,6 +1667,26 @@ def register_routes(app):
         # 已经结束（或不在队列里）：前端按本地状态清理即可
         return web.json_response({"action": "finished"})
 
+    async def free_memory(request):
+        """卸载已加载的模型并清空显存 / 内存缓存（转发 ComfyUI 自身的 POST /free）
+
+        前端在本地开发（vite dev server）时是同源外的地址，直接调 /free 到不了
+        ComfyUI，所以统一走后端这个接口，由后端回环请求本机 ComfyUI。
+        """
+        origin = _comfy_base(request)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{origin}/free",
+                    json={"unload_models": True, "free_memory": True},
+                ) as response:
+                    await response.read()
+                    if response.status >= 400:
+                        return web.json_response({"error": "ComfyUI 显存清理失败"}, status=502)
+        except aiohttp.ClientError as exc:
+            return web.json_response({"error": f"连接 ComfyUI 失败: {exc}"}, status=502)
+        return web.json_response({"ok": True})
+
     if os.path.isdir(_FRONTEND_DIST):
         app.add_routes([web.static("/infinite_canvas/app", _FRONTEND_DIST)])
 
@@ -1701,6 +1721,7 @@ def register_routes(app):
             web.post(f"{API_PREFIX}/execute", execute_workflow),
             web.get(f"{API_PREFIX}/prompts/{{prompt_id}}", prompt_result),
             web.post(f"{API_PREFIX}/queue/abort", abort_prompt),
+            web.post(f"{API_PREFIX}/free", free_memory),
         ]
     )
 

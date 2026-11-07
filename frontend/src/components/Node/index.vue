@@ -604,6 +604,7 @@ let resizeSession = null;
 
 function startResize(event) {
   if (event.button !== 0) return;
+  graph?.captureUndo?.(true);
   resizeSession = {
     x: event.clientX,
     y: event.clientY,
@@ -915,6 +916,7 @@ function onStripDrop(event, entry) {
   overEntry.value = null;
   if (!from || from.group !== entry.group || from.i === entry.i) return;
 
+  graph?.captureUndo?.(true);
   const key = entry.group === "input" ? "inputMedia" : "media";
   const list = [...(props.data[key] || [])];
   const [moved] = list.splice(from.i, 1);
@@ -951,21 +953,16 @@ const showPort = computed(() => props.selected || connecting.value);
 const sourceConnected = computed(() => flow.edges.value.some((e) => e.source === props.id));
 const targetConnected = computed(() => flow.edges.value.some((e) => e.target === props.id));
 
-// 删除第 i 张自身素材；素材存在 ComfyUI input 目录时顺带删掉文件
+// 删除第 i 张自身素材（只从节点上移除，input 文件保留，由资产面板统一管理）
 function removeMediaAt(i) {
   // 删除后鼠标可能停在原地不再触发 mouseleave，悬停预览气泡要主动关掉
   closePreview();
   const list = props.data.media || [];
   if (!list[i]) return;
 
+  graph?.captureUndo?.();
   const at = index.value;
-  const item = list[i];
-  if (item.blob) URL.revokeObjectURL(item.url);
-  if (item.ref && item.ref.type === "input" && String(item.ref.filename).startsWith("infinite_canvas_")) {
-    fetch(`/infinite_canvas/api/media/${encodeURIComponent(item.ref.filename)}`, {
-      method: "DELETE",
-    }).catch(() => {});
-  }
+  // blob 预览地址先不回收：撤销回来还要用，节点卸载时统一释放
 
   const rest = list.filter((_, k) => k !== i);
   props.data.media = rest;
@@ -975,6 +972,7 @@ function removeMediaAt(i) {
 
 // 删除节点（相连的连线会一起删掉）；素材由每张卡片/缩略图右上角的按钮单独删除
 function removeNode() {
+  graph?.captureUndo?.(true);
   // 运行中/排队中删除节点，同时中断任务或把它从队列里撤掉
   if (isBusy.value) graph.abortPrompt(props.id);
   flow.removeNodes([props.id]);
@@ -1191,6 +1189,7 @@ async function pickWorkflow(name) {
   }
   // 换工作流后旧参数可能对不上新字段，清空参数，但提示词要带过去。
   // 字段先拉回来再一次性切换，避免中途出现"清空 → 赋值"的闪动
+  graph?.captureUndo?.(true);
   const kept = promptText();
   const nextFields = await fetchFields(name);
   fields.value = nextFields;
@@ -1234,7 +1233,9 @@ function valueOf(field) {
   return value === undefined ? field.default : value;
 }
 
-function setValue(field, value) {
+// record=false 用于执行前刷新随机数这类内部写入，不该占用撤销步骤
+function setValue(field, value, record = true) {
+  if (record) graph?.captureUndo?.();
   const params = { ...(props.data.params || {}) };
   params[field.nodeId] = { ...(params[field.nodeId] || {}), [field.key]: value };
   props.data.params = params;
@@ -1318,6 +1319,8 @@ function insertIntoPrompt(text) {
 }
 
 function onPromptInput(event) {
+  // 没有对应字段时提示词写在 promptDraft，这里补一次记录（有字段时 setValue 已记录过）
+  graph?.captureUndo?.();
   const value = event.target.value;
   // 输入 @ / 直接打开资产库 / 提示词面板，触发字符本身留在框里的意义不大，直接去掉
   const trigger = event.data || "";
@@ -1397,7 +1400,7 @@ function resolveValue(field) {
   }
   if (field.type === "random" && isRandom(field)) {
     const value = randomInt(field);
-    setValue(field, value);
+    setValue(field, value, false);
     return value;
   }
   return valueOf(field);
