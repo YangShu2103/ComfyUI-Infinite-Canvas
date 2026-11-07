@@ -510,12 +510,14 @@
         <div class="panel-row">
           <button
             class="panel-run"
-            :class="{ 'is-stop': isBusy }"
+            :class="{ 'is-stop': isBusy || isWaiting }"
             type="button"
-            :disabled="isUploading || isWaiting"
+            :disabled="isUploading"
             @click.stop="onRunClick"
           >
-            {{ isWaiting ? "等待中" : isUploading ? "上传中" : isBusy ? "中断" : "运行" }}
+            {{
+              isUploading ? "上传中" : isBusy || isWaiting ? "中断" : "运行"
+            }}
           </button>
         </div>
         <div v-if="runError" class="panel-error">{{ runError }}</div>
@@ -1137,16 +1139,21 @@ const progressSub = computed(() => {
 });
 
 function onRunClick() {
-  if (isBusy.value) {
+  if (isBusy.value || isWaiting.value) {
     interruptRun();
     return;
   }
   run();
 }
 
-// 中断：运行中的取消执行，排队中的从队列里删掉（后端按队列状态自动区分）
+// 中断：等待上游的直接放弃这次派发（还没提交给 ComfyUI）；
+// 运行中的取消执行，排队中的从队列里删掉（后端按队列状态自动区分）
 async function interruptRun() {
   runError.value = "";
+  if (isWaiting.value) {
+    graph.clearWaiting(props.id);
+    return;
+  }
   await graph.abortPrompt(props.id);
 }
 
@@ -1475,15 +1482,17 @@ function busyUpstreamIds() {
   return upstream.filter((id) => graph.nodeBusy?.(id));
 }
 
-// 轮询等上游全部结束；上游节点被删或超时也会放开，避免一直卡住
-function waitUpstreamsIdle(timeoutMs = 30 * 60 * 1000) {
+// 轮询等上游全部结束；上游节点被删、超时、或被手动中断都会放开，避免一直卡住
+function waitUpstreamsIdle(targetId, timeoutMs = 30 * 60 * 1000) {
   if (!busyUpstreamIds().length) return Promise.resolve();
   const startedAt = Date.now();
   return new Promise((resolve) => {
     const timer = setInterval(() => {
-      const gone = !flow.nodes.value.some((node) => node.id === props.id);
+      const gone = !flow.nodes.value.some((node) => node.id === targetId);
+      // 等待期间被手动中断：等待状态已被清掉，直接放弃这次提交
+      const cancelled = graph.runStates?.[targetId]?.status !== "waiting";
       const idle = !busyUpstreamIds().length;
-      if (gone || idle || Date.now() - startedAt > timeoutMs) {
+      if (gone || cancelled || idle || Date.now() - startedAt > timeoutMs) {
         clearInterval(timer);
         resolve();
       }
@@ -1509,7 +1518,9 @@ async function run() {
     // 先以"等待中"占住下游节点，等上游结束再提交（状态保留到 trackPrompt 接管）
     if (busyUpstreamIds().length) {
       graph.markWaiting(targetId);
-      await waitUpstreamsIdle();
+      await waitUpstreamsIdle(targetId);
+      // 等待期间用户点了中断：等待状态已被清掉，这次派发直接作废
+      if (graph.runStates?.[targetId]?.status !== "waiting") return;
     }
     // 自己或上游节点的素材还在上传时，不打断用户操作：等这些素材上传落定再提交
     const uploadIds = [...ownMedia.value, ...inputMedia.value]
