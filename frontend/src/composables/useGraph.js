@@ -1,4 +1,4 @@
-import { computed, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
+import { computed, nextTick, onScopeDispose, reactive, ref, toRaw, watch } from "vue";
 import { useVueFlow } from "@vue-flow/core";
 
 // 默认节点按 16:9 出图：宽度 454、高度 226，使素材卡片区域（内容区 × 84%）正好 16:9，
@@ -193,6 +193,8 @@ export function useGraph() {
   const viewport = ref({ ...DEFAULT_VIEWPORT });
   // 坐标变更版本号：只在拖动结束/撤销重做时自增，供自动保存判断是否需要落盘
   const layoutRevision = ref(0);
+  // Shift 拖拽框选出来的节点只高亮，不展开参数面板（否则一次框选会刷出一排面板）
+  const boxSelectedIds = reactive(new Set());
 
   let nodeSeq = 0;
   let edgeSeq = 0;
@@ -225,8 +227,12 @@ export function useGraph() {
     captureUndo();
     nodeSeq += 1;
     const id = String(nodeSeq);
-    nodes.value = [
-      ...nodes.value.map((node) => (node.selected ? { ...node, selected: false } : node)),
+    // 增量添加：整体替换 nodes 数组会让 Vue Flow 对全部节点重建图节点，
+    // 且内部对无父节点的情况是 O(N²)，2000+ 节点时新建一个节点就要几百毫秒
+    for (const node of flow.getNodes.value) {
+      if (node.selected) node.selected = false;
+    }
+    flow.addNodes([
       {
         id,
         type: "demo",
@@ -237,7 +243,7 @@ export function useGraph() {
         },
         data: baseData(`${nodeSeq}`),
       },
-    ];
+    ]);
     // 新建后立即选中并展开参数面板，不用再点一下
     nextTick(() => {
       const created = flow.getNodes.value.find((node) => node.id === id);
@@ -466,7 +472,7 @@ export function useGraph() {
     if (!size && first.thumbUrl && first.url) size = await measureImage(first.url);
     if (!size || !size.w || !size.h) return false;
     // 图片加载期间节点可能已被删除
-    const node = nodes.value.find((item) => item.id === nodeId);
+    const node = flow.findNode(nodeId);
     if (!node) return false;
 
     const ratio = size.h / size.w;
@@ -654,8 +660,8 @@ export function useGraph() {
 
   // 节点输出给下游时只带自身媒体（不含它自己的上游输入）
   function inheritMedia(sourceId, targetId) {
-    const source = nodes.value.find((item) => item.id === sourceId);
-    const target = nodes.value.find((item) => item.id === targetId);
+    const source = flow.findNode(sourceId);
+    const target = flow.findNode(targetId);
     if (!source || !target) return;
 
     const own = source.data.media || [];
@@ -749,9 +755,11 @@ export function useGraph() {
 
   // 只比较素材指纹：拖拽时节点 position 每帧都在变，
   // deep watch 会把所有节点的 data（素材、参数）整体深遍历一遍
-  const mediaSignature = computed(() =>
-    nodes.value.map((node) => `${node.id}:${mediaKeyOf(node)}`).join("|")
-  );
+  const mediaSignature = computed(() => {
+    return nodes.value
+      .map((node) => `${node.id}:${mediaKeyOf(node)}`)
+      .join("|");
+  });
   watch(mediaSignature, () => {
     if (loading || restoring) return;
     const alive = new Set();
@@ -780,14 +788,20 @@ export function useGraph() {
   function cloneMediaList(list) {
     return (list || [])
       .filter((item) => item && (item.ref?.filename || item.pending || item.url))
-      .map((item) => JSON.parse(JSON.stringify(stripMediaItem(item))));
+      .map((item) => {
+        const { url, thumbUrl, blob, file, pending, error, ...rest } = item;
+        return rest.ref ? { ...rest, ref: { ...rest.ref } } : rest;
+      });
   }
 
   function snapshotGraph() {
     return {
       seq: { node: nodeSeq, edge: edgeSeq },
-      nodes: nodes.value.map((node) => {
-        const { media, inputMedia, ...rest } = node.data || {};
+      nodes: nodes.value.map((item) => {
+        // 快照只读数据，用 toRaw 绕开响应式代理，1000 个节点时能省掉大量 get 陷阱
+        const node = toRaw(item);
+        const data = toRaw(node.data) || {};
+        const { media, inputMedia, ...rest } = data;
         return {
           id: node.id,
           type: node.type || "demo",
@@ -796,7 +810,9 @@ export function useGraph() {
             y: Math.round(node.position?.y || 0),
           },
           data: {
-            ...JSON.parse(JSON.stringify(rest)),
+            // data 上除素材外的字段（params / randomFields / workflow 等）都是整体替换写入，
+            // 从不就地修改，所以浅拷贝共享引用就够了：省掉每次新建节点时深克隆整张图
+            ...rest,
             media: cloneMediaList(media),
             inputMedia: cloneMediaList(inputMedia),
           },
@@ -857,8 +873,9 @@ export function useGraph() {
     if (!snapshot) return false;
 
     // 撤销掉正在运行的节点前先中断，避免任务跑完找不到节点
+    const kept = new Set(snapshot.nodes.map((node) => node.id));
     for (const node of nodes.value) {
-      if (!snapshot.nodes.some((item) => item.id === node.id)) abortPrompt(node.id);
+      if (!kept.has(node.id)) abortPrompt(node.id);
     }
 
     undoAt = 0;
@@ -876,21 +893,26 @@ export function useGraph() {
 
   function exportCanvas() {
     return {
-      nodes: nodes.value.map((node) => ({
-        id: node.id,
-        type: node.type || "demo",
-        position: { x: node.position.x, y: node.position.y },
-        data: {
-          ...node.data,
-          // 还没传完的占位素材没有 ref，存下来也没法还原，直接跳过
-          media: (node.data.media || [])
-            .filter((item) => item && item.ref && item.ref.filename)
-            .map(stripMediaItem),
-          inputMedia: (node.data.inputMedia || [])
-            .filter((item) => item && item.ref && item.ref.filename)
-            .map(stripMediaItem),
-        },
-      })),
+      nodes: nodes.value.map((item) => {
+        // 保存只读数据：用 toRaw 避免随后 JSON.stringify 时逐个字段走代理
+        const node = toRaw(item);
+        const data = toRaw(node.data) || {};
+        return {
+          id: node.id,
+          type: node.type || "demo",
+          position: { x: node.position.x, y: node.position.y },
+          data: {
+            ...data,
+            // 还没传完的占位素材没有 ref，存下来也没法还原，直接跳过
+            media: (data.media || [])
+              .filter((mediaItem) => mediaItem && mediaItem.ref && mediaItem.ref.filename)
+              .map(stripMediaItem),
+            inputMedia: (data.inputMedia || [])
+              .filter((mediaItem) => mediaItem && mediaItem.ref && mediaItem.ref.filename)
+              .map(stripMediaItem),
+          },
+        };
+      }),
       edges: edges.value.map((edge) => ({
         id: edge.id,
         type: edge.type || "canvas",
@@ -910,6 +932,7 @@ export function useGraph() {
 
   function loadCanvas(canvas) {
     loading = true;
+    boxSelectedIds.clear();
     flushUndo();
     const loadedNodes = (canvas.nodes || []).map((node) => {
       const data = node.data || {};
@@ -967,6 +990,7 @@ export function useGraph() {
 
   function resetCanvas() {
     loading = true;
+    boxSelectedIds.clear();
     flushUndo();
     nodes.value = [];
     edges.value = [];
@@ -1059,13 +1083,35 @@ export function useGraph() {
     // 落在端口上说明是有效连接，交给 onConnect 处理
     if (event.target.closest(".vue-flow__handle")) return;
 
+    // 松手落在节点主体上也视为连接：整块节点都是连接热区，不用精确对准端口。
+    // 放开处是自己的节点时仍然按"空白处松手"处理（新建下游节点）
+    const dropNodeId = event.target
+      .closest(".vue-flow__node")
+      ?.getAttribute("data-id");
+    if (
+      dropNodeId &&
+      dropNodeId !== start.nodeId &&
+      nodes.value.some((item) => item.id === dropNodeId)
+    ) {
+      captureUndo(true);
+      if (start.handleType === "source") {
+        addEdge(start.nodeId, start.handleId, dropNodeId, null);
+        inheritMedia(start.nodeId, dropNodeId);
+      } else {
+        addEdge(dropNodeId, null, start.nodeId, start.handleId);
+        inheritMedia(dropNodeId, start.nodeId);
+      }
+      return;
+    }
+
     const id = addNode(
       flow.screenToFlowCoordinate({ x: event.clientX, y: event.clientY })
     );
 
     // 手动拉线新建的下游节点沿用上游选择的工作流和已填参数
-    const upstream = nodes.value.find((item) => item.id === start.nodeId);
-    const created = nodes.value.find((item) => item.id === id);
+    // 新节点是增量加进 Vue Flow store 的，nodes.value 要等这一轮刷新后才有，这里直接查 store
+    const upstream = flow.findNode(start.nodeId);
+    const created = flow.findNode(id);
     if (created && upstream?.data.workflow) {
       created.data.workflow = upstream.data.workflow;
       created.data.params = JSON.parse(JSON.stringify(upstream.data.params || {}));
@@ -1098,8 +1144,9 @@ export function useGraph() {
     captureUndo(true);
     nodeSeq += 1;
     const id = String(nodeSeq);
-    nodes.value = [
-      ...nodes.value,
+    // 和新建节点一样走增量添加：整体替换 nodes 数组会让 Vue Flow 重建全部图节点，
+    // 且内部对无父节点的匹配是 O(N²)，2000+ 节点时复制一次要几百毫秒
+    flow.addNodes([
       {
         id,
         type: "demo",
@@ -1125,7 +1172,7 @@ export function useGraph() {
           })),
         },
       },
-    ];
+    ]);
 
     // 上游连线一起复制，副本的运行条件和原节点一致
     for (const edge of edges.value.filter((item) => item.target === sourceId)) {
@@ -1229,9 +1276,16 @@ export function useGraph() {
       });
     }
 
-    // 清掉旧选中，再追加新节点（不要复制节点对象，否则 Vue Flow 会重新测量尺寸）
+    // 清掉旧选中，再增量追加新节点（整体替换数组会让 Vue Flow 重建全部图节点，
+    // 且内部对无父节点的匹配是 O(N²)，2000+ 节点时粘贴一次要几百毫秒）
     flow.removeSelectedNodes();
-    nodes.value = [...nodes.value, ...created];
+    flow.addNodes(created);
+
+    // 一次粘贴多个节点按"框选"处理：只高亮，不逐个展开参数面板。
+    // 之后单独点其中某个节点时，rememberNode 会把它移出集合、面板正常展开
+    if (created.length > 1) {
+      for (const node of created) boxSelectedIds.add(node.id);
+    }
 
     // 内部连线按新 id 重建，并让上游媒体重新同步到下游
     for (const edge of clipboard.edges || []) {
@@ -1319,6 +1373,23 @@ export function useGraph() {
   const connectedSources = computed(() => new Set(edges.value.map((edge) => edge.source)));
   const connectedTargets = computed(() => new Set(edges.value.map((edge) => edge.target)));
 
+  // Shift 拖拽框选出来的节点只高亮，不展开参数面板（否则一次框选会刷出一排面板）；
+  // 只有主动点击 / 新建的节点才展开，点一下就把它从这份集合里去掉
+  let boxSelecting = false;
+  const offSelectionStart = flow.onSelectionStart(() => {
+    boxSelecting = true;
+  });
+  const offSelectionEnd = flow.onSelectionEnd(() => {
+    boxSelecting = false;
+  });
+  watch(
+    () => flow.getSelectedNodes.value.map((node) => node.id).join(","),
+    () => {
+      if (!boxSelecting) return;
+      for (const node of flow.getSelectedNodes.value) boxSelectedIds.add(node.id);
+    }
+  );
+
   // 视口裁剪：当前视口内（外扩一圈缓冲）的节点 id。
   // 只决定节点内容挂不挂载，素材引用、连线和上下游传递都在 nodes/edges 上，不受影响
   const VISIBLE_BUFFER = 320;
@@ -1338,7 +1409,11 @@ export function useGraph() {
     const minY = (-panned.y - VISIBLE_BUFFER) / zoom;
     const maxY = (-panned.y + viewSize.value.height + VISIBLE_BUFFER) / zoom;
     const ids = new Set();
-    for (const node of nodes.value) {
+    for (const item of nodes.value) {
+      // 拖动节点时 position 每帧都在变：直接读代理会让这个 computed 每帧失效，
+      // 2474 个节点整表重算一次约 5ms，是拖拽掉帧的主要来源。
+      // 用 toRaw 只保留"节点增删 + 视口变化"两个依赖；被拖动/选中的节点本来就不会被裁剪
+      const node = toRaw(item);
       const w = Number(node.data?.w) || NODE_WIDTH;
       const h = Number(node.data?.h) || NODE_HEIGHT;
       const x = Number(node.position?.x) || 0;
@@ -1719,7 +1794,7 @@ export function useGraph() {
 
   // 把节点里的一张素材拖到画布空白处：用这张素材新建一个不连线的节点
   function spawnMediaNodeAt(sourceId, i, clientX, clientY) {
-    const source = nodes.value.find((item) => item.id === sourceId);
+    const source = flow.findNode(sourceId);
     const item = source?.data?.media?.[i];
     if (!source || !item) return null;
 
@@ -1727,8 +1802,8 @@ export function useGraph() {
     const point = flow.screenToFlowCoordinate({ x: clientX, y: clientY });
     nodeSeq += 1;
     const id = String(nodeSeq);
-    nodes.value = [
-      ...nodes.value,
+    // 同样走增量添加，避免 Vue Flow 因整体替换数组而重建全部图节点
+    flow.addNodes([
       {
         id,
         type: "demo",
@@ -1745,7 +1820,7 @@ export function useGraph() {
           index: 0,
         },
       },
-    ];
+    ]);
     fitNodeToFirstImage(id, [item]);
     return id;
   }
@@ -1758,8 +1833,8 @@ export function useGraph() {
     const point = flow.screenToFlowCoordinate({ x: clientX, y: clientY });
     nodeSeq += 1;
     const id = String(nodeSeq);
-    nodes.value = [
-      ...nodes.value,
+    // 同样走增量添加，避免 Vue Flow 因整体替换数组而重建全部图节点
+    flow.addNodes([
       {
         id,
         type: "demo",
@@ -1773,7 +1848,7 @@ export function useGraph() {
           index: 0,
         },
       },
-    ];
+    ]);
     // 资产拖进画布：按第一张素材的比例撑开节点
     fitNodeToFirstImage(id, items);
     return id;
@@ -1792,6 +1867,7 @@ export function useGraph() {
     edges,
     connectedSources,
     connectedTargets,
+    boxSelectedIds,
     visibleNodeIds,
     viewport,
     layoutRevision,

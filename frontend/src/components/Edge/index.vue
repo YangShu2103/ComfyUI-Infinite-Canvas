@@ -49,6 +49,10 @@
 import { computed, inject, ref } from "vue";
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, useVueFlow } from "@vue-flow/core";
 
+// 多根节点组件无法继承属性：Vue Flow 会给 Edge 传一堆扩展属性，
+// 不关掉的话每次重渲染都会打印一条警告（1000+ 连线时警告本身就很耗时）
+defineOptions({ inheritAttrs: false });
+
 const graph = inject("canvasGraph");
 
 const props = defineProps({

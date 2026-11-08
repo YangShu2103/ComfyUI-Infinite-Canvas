@@ -1,4 +1,4 @@
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, toRaw, watch } from "vue";
 
 const API = "/infinite_canvas/api/canvases";
 const LAST_KEY = "infinite-canvas:last";
@@ -115,10 +115,11 @@ export function useCanvas({
     saving.value = true;
     try {
       const canvas = exportCanvas();
+      const body = JSON.stringify({ canvas });
       await request(`${API}/${encodeURIComponent(currentId.value)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canvas }),
+        body,
       });
       dirty.value = false;
       message.value = "";
@@ -188,29 +189,35 @@ export function useCanvas({
 
   // 注意：这里列出的字段要和 exportCanvas 保存的内容保持一致，
   // 以后往 node.data 里加需要持久化的字段时别忘了加进来，否则改动不会触发自动保存
-  const saveSignature = computed(() =>
-    JSON.stringify([
+  const saveSignature = computed(() => {
+    return JSON.stringify([
       // 坐标不逐个比较：1000 个节点时拖拽每帧都要序列化一次。
       // 拖动结束 / 撤销重做会自增 layoutRevision，用它通知保存
       layoutRevision?.value || 0,
-      nodes.value.map((node) => [
-        node.id,
-        node.data?.label,
-        node.data?.w,
-        node.data?.h,
-        node.data?.index,
-        node.data?.workflow,
-        node.data?.params,
-        node.data?.randomFields,
-        mediaFingerprint(node.data?.media),
-        mediaFingerprint(node.data?.inputMedia),
-      ]),
+      nodes.value.map((node) => {
+        // 通过代理只读出这些引用（建立依赖），真正序列化时用 toRaw：
+        // params / randomFields 都是整体替换写入，读一次引用就能感知变化，
+        // 不必让 JSON.stringify 逐层走代理（1000 个节点时这是主要耗时）
+        const data = node.data;
+        return [
+          node.id,
+          data?.label,
+          data?.w,
+          data?.h,
+          data?.index,
+          data?.workflow,
+          toRaw(data?.params),
+          toRaw(data?.randomFields),
+          mediaFingerprint(data?.media),
+          mediaFingerprint(data?.inputMedia),
+        ];
+      }),
       edges.value.map((edge) => [edge.id, edge.source, edge.target]),
       viewport.value.x,
       viewport.value.y,
       viewport.value.zoom,
-    ])
-  );
+    ]);
+  });
   watch(saveSignature, scheduleSave, { flush: "post" });
 
   return {

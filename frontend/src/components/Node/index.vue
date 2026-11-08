@@ -1,6 +1,7 @@
 <template>
   <div
     class="demo-node"
+    :class="{ 'is-connect-hot': connectHot }"
     :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mousedown="onRootMouseDown"
     @mouseenter="enterActions"
@@ -222,7 +223,7 @@
     </div>
 
     <button
-      v-if="actionHover || selected"
+      v-if="actionsVisible"
       class="node-delete"
       type="button"
       title="删除节点"
@@ -244,7 +245,7 @@
 
     <!-- 右下角拖拽缩放：只改节点自身尺寸，面板/工具栏尺寸不变 -->
     <div
-      v-if="actionHover || selected"
+      v-if="actionsVisible"
       class="node-resize"
       title="拖动调整节点大小"
       @pointerdown.stop.prevent="startResize"
@@ -264,7 +265,7 @@
 
     <Transition name="panel-fade">
       <div
-        v-if="selected"
+        v-if="panelOpen"
         ref="panelEl"
         class="node-panel"
         @mousedown.stop
@@ -598,7 +599,13 @@ const flow = useVueFlow("demo");
 // 悬停节点时显示上方扇形操作；离开后延迟收起，留出走到按钮上的时间
 const actionHover = ref(false);
 let actionTimer = null;
-const actionsVisible = computed(() => actionHover.value || props.selected);
+
+// Shift 框选出来的节点只高亮：参数面板和上方操作条都不展开（框选一次会选中一片节点）；
+// 点一下框选里的某个节点，App 会把它从集合里移除，面板/操作条随之展开
+const panelOpen = computed(
+  () => props.selected && !graph?.boxSelectedIds?.has(props.id)
+);
+const actionsVisible = computed(() => actionHover.value || panelOpen.value);
 
 function enterActions() {
   clearTimeout(actionTimer);
@@ -980,6 +987,12 @@ const connecting = computed(() => !!flow.connectionStartHandle.value);
 
 // 选中节点 或 拉线中 才显示端口
 const showPort = computed(() => props.selected || connecting.value);
+
+// 拉线时整块节点都是连接热区，其它节点悬停时给个提示；起点节点本身不提示
+const connectHot = computed(() => {
+  const startNode = flow.connectionStartHandle.value?.nodeId;
+  return connecting.value && startNode != null && startNode !== props.id;
+});
 
 // 已经连出 / 连入的端口常驻显示
 // 是否已连线：读取 useGraph 汇总好的 Set，
@@ -1378,9 +1391,10 @@ const promptTarget = {
   insert: insertIntoPrompt,
 };
 
-// 只给面板展开（选中）的节点登记，取消选中或卸载时注销
+// 只给面板展开的节点登记，框选出来的节点没有面板，也不接收提示词；
+// 取消选中或卸载时注销
 watch(
-  () => props.selected,
+  panelOpen,
   (value) => {
     if (value) registerTarget(props.id, promptTarget);
     else unregisterTarget(props.id);
@@ -1620,6 +1634,12 @@ async function run() {
 /* 选中态由 Vue Flow 挂在外部节点容器上，作用到最后一级 .demo-node */
 .vue-flow__node.selected .demo-node {
   border-color: var(--c-accent);
+}
+
+/* 拉线时整块节点都是连接热区，悬停给出可连接的视觉反馈 */
+.demo-node.is-connect-hot:hover {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 2px var(--c-accent-weak), 0 6px 18px var(--c-shadow);
 }
 
 .node-head {

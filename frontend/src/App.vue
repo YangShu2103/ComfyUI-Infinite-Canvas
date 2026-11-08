@@ -22,9 +22,19 @@
         :max-zoom="2"
         :zoom-on-double-click="false"
         :connection-radius="70"
+        connection-mode="strict"
         only-render-visible-elements
       >
         <Background :pattern-color="canvasGridColor" :gap="20" />
+
+        <!-- 连接预览线：鼠标落在节点上时吸附到该节点的默认端口（左入 / 右出） -->
+        <template #connection-line="line">
+          <path
+            :d="connectLinePath(line)"
+            class="vue-flow__connection-path"
+            :class="{ 'is-snapped': !!connectSnap }"
+          />
+        </template>
       </VueFlow>
 
       <!-- 划线切断连线：按住 Ctrl / Option 在空白处拖出一条红线 -->
@@ -58,8 +68,8 @@
 </template>
 
 <script setup>
-import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref } from "vue";
-import { VueFlow, useVueFlow } from "@vue-flow/core";
+import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { VueFlow, getBezierPath, useVueFlow } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
 import CanvasEdge from "./components/Edge/index.vue";
@@ -73,6 +83,25 @@ import { FILE_ASSET_DRAG_TYPE } from "./composables/useLibrary.js";
 import { useTheme } from "./composables/useTheme.js";
 
 const { canvasGridColor } = useTheme();
+
+// ---------------------------------------------------------------- 连接预览线吸附
+// 拉线时整块节点都是连接热区，所以预览线也要吸到节点的默认端口（左入 / 右出），
+// 而不是停在鼠标位置直接插进节点里，保持和正常连线一致的视觉
+const connectSnap = ref(null);
+
+function connectLinePath(line) {
+  // Vue Flow 靠近合法端口时已经把 connectionPosition 换成端口坐标，这里只补节点主体的情况
+  const snap = connectSnap.value;
+  const [d] = getBezierPath({
+    sourceX: line.sourceX,
+    sourceY: line.sourceY,
+    sourcePosition: line.sourcePosition,
+    targetX: snap ? snap.x : line.targetX,
+    targetY: snap ? snap.y : line.targetY,
+    targetPosition: snap ? snap.position : line.targetPosition,
+  });
+  return d;
+}
 
 // 缩小到 45% 以下时，节点和卡片的阴影基本看不出来，但每一层阴影都要单独合成；
 // 节点一多就是纯 GPU 负担，直接关掉
@@ -89,6 +118,7 @@ const {
   edges,
   connectedSources,
   connectedTargets,
+  boxSelectedIds,
   visibleNodeIds,
   viewport,
   runStates,
@@ -130,7 +160,10 @@ const lastNodeId = ref(null);
 
 function rememberNode(event) {
   const el = event.target instanceof Element ? event.target.closest(".vue-flow__node") : null;
-  if (el && el.dataset.id) lastNodeId.value = el.dataset.id;
+  if (!el || !el.dataset.id) return;
+  lastNodeId.value = el.dataset.id;
+  // 点开的节点不再算框选，参数面板正常展开
+  boxSelectedIds.delete(el.dataset.id);
 }
 
 function focusLastNode() {
@@ -153,6 +186,50 @@ function fitCanvasView() {
 const flow = useVueFlow("demo");
 const wrapEl = ref(null);
 const cutting = ref(false);
+
+// 拉线时整块节点都是连接热区：鼠标压在节点身上就把预览线吸到该节点的默认端口
+// pointermove 的 target 就是光标下的元素，比 elementFromPoint 便宜，节点多时也不卡
+function trackConnectPointer(event) {
+  const start = flow.connectionStartHandle.value;
+  const target = event.target;
+  if (!start || !(target instanceof Element) || target.closest(".node-panel")) {
+    connectSnap.value = null;
+    return;
+  }
+
+  const nodeId = target.closest(".vue-flow__node")?.dataset.id;
+  const node = nodeId && nodeId !== start.nodeId ? flow.findNode(nodeId) : null;
+  const size = node?.dimensions;
+  if (!node || !size?.width || !size?.height) {
+    connectSnap.value = null;
+    return;
+  }
+
+  // 从输出口往右拉吸附到目标的左侧入口，从输入口往左拉吸附到目标的右侧出口
+  const toTarget = start.type === "source";
+  connectSnap.value = {
+    x: toTarget ? node.computedPosition.x : node.computedPosition.x + size.width,
+    y: node.computedPosition.y + size.height / 2,
+    position: toTarget ? "left" : "right",
+  };
+}
+
+watch(
+  () => flow.connectionStartHandle.value,
+  (handle) => {
+    if (handle) {
+      window.addEventListener("pointermove", trackConnectPointer, true);
+    } else {
+      window.removeEventListener("pointermove", trackConnectPointer, true);
+      connectSnap.value = null;
+    }
+  }
+);
+
+onBeforeUnmount(() => {
+  window.removeEventListener("pointermove", trackConnectPointer, true);
+});
+
 const cutPoints = ref([]);
 const cutSize = ref({ w: 0, h: 0 });
 let cutRect = { left: 0, top: 0 };
@@ -417,6 +494,7 @@ provide("canvasGraph", {
   spawnDetachedNode,
   connectedSources,
   connectedTargets,
+  boxSelectedIds,
   visibleNodeIds,
   viewport,
   runStates,
@@ -579,6 +657,20 @@ async function onDrop(event) {
 .flow-wrap :deep(.vue-flow__edge-path) {
   stroke: var(--c-edge);
   stroke-dasharray: 6 5;
+}
+
+/* 拉线预览：默认虚线；吸到节点端口时变主题色实线，明确"会连到这里" */
+.flow-wrap :deep(.vue-flow__connection-path) {
+  fill: none;
+  stroke: var(--c-edge);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.flow-wrap :deep(.vue-flow__connection-path.is-snapped) {
+  stroke: var(--c-accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
 }
 
 /* 与选中节点相连的线：主题色实线 + 轻微光晕 */
