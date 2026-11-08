@@ -204,6 +204,9 @@ export function useGraph() {
   const uploadInFlight = new Set();
   let uploadWaiters = [];
   let connectStart = null;
+  // 拉线预览的吸附点：整块节点都是连接热区，预览线要吸到节点的默认端口
+  // （从输出口拉线吸目标的左侧入口，从输入口拉线吸目标的右侧出口）
+  const connectSnap = ref(null);
   // 加载画布时整体替换 nodes/edges，需要让同步/回收的监听跳过这一轮
   let loading = false;
   // Vue Flow 允许落在端口附近就吸附连接，此时 mouseup 的 target 可能是画布，
@@ -1060,6 +1063,38 @@ export function useGraph() {
     inheritMedia(connection.source, connection.target);
   }
 
+  // 拉线时整块节点都是连接热区：鼠标压在节点身上就把预览线吸到该节点的默认端口。
+  // 落点只认光标下的节点，不做端口半径吸附（App.vue 里 connection-radius 设为 0），
+  // 否则光标离节点还有几十像素就会被端口吸过去
+  function trackConnectPointer(event) {
+    const start = flow.connectionStartHandle.value;
+    const touch = event.touches?.[0];
+    const target = touch
+      ? document.elementFromPoint(touch.clientX, touch.clientY)
+      : event.target;
+    if (!start || !(target instanceof Element) || target.closest(".node-panel")) {
+      connectSnap.value = null;
+      return;
+    }
+
+    const nodeId = target.closest(".vue-flow__node")?.dataset.id;
+    const node = nodeId && nodeId !== start.nodeId ? flow.findNode(nodeId) : null;
+    const size = node?.dimensions;
+    if (!node || !size?.width || !size?.height) {
+      connectSnap.value = null;
+      return;
+    }
+
+    // 从输出口往右拉吸附到目标的左侧入口，从输入口往左拉吸附到目标的右侧出口
+    const toTarget = start.type === "source";
+    connectSnap.value = {
+      nodeId: node.id,
+      x: toTarget ? node.computedPosition.x : node.computedPosition.x + size.width,
+      y: node.computedPosition.y + size.height / 2,
+      position: toTarget ? "left" : "right",
+    };
+  }
+
   function onConnectStart(payload) {
     connectStart = payload
       ? {
@@ -1068,11 +1103,18 @@ export function useGraph() {
           handleType: payload.handleType,
         }
       : null;
+    connectSnap.value = null;
+    window.addEventListener("mousemove", trackConnectPointer);
+    window.addEventListener("touchmove", trackConnectPointer, { passive: true });
   }
 
   function onConnectEnd(event) {
     const start = connectStart;
     connectStart = null;
+    window.removeEventListener("mousemove", trackConnectPointer);
+    window.removeEventListener("touchmove", trackConnectPointer);
+    // 松手时可能已经不在节点上（只是被热区吸住了），把吸附到的节点一起带上
+    const snappedNodeId = connectSnap.value?.nodeId;
 
     if (justConnected) {
       justConnected = false;
@@ -1080,19 +1122,12 @@ export function useGraph() {
     }
 
     if (!start || !event || !(event.target instanceof Element)) return;
-    // 落在端口上说明是有效连接，交给 onConnect 处理
-    if (event.target.closest(".vue-flow__handle")) return;
 
-    // 松手落在节点主体上也视为连接：整块节点都是连接热区，不用精确对准端口。
-    // 放开处是自己的节点时仍然按"空白处松手"处理（新建下游节点）
-    const dropNodeId = event.target
-      .closest(".vue-flow__node")
-      ?.getAttribute("data-id");
-    if (
-      dropNodeId &&
-      dropNodeId !== start.nodeId &&
-      nodes.value.some((item) => item.id === dropNodeId)
-    ) {
+    // 落在节点主体、端口、或热区吸附范围里都视为连接；落在自己的端口上则什么都不做
+    const dropNodeId =
+      event.target.closest(".vue-flow__node")?.getAttribute("data-id") || snappedNodeId;
+    if (dropNodeId === start.nodeId && event.target.closest(".vue-flow__handle")) return;
+    if (dropNodeId && dropNodeId !== start.nodeId && flow.findNode(dropNodeId)) {
       captureUndo(true);
       if (start.handleType === "source") {
         addEdge(start.nodeId, start.handleId, dropNodeId, null);
@@ -1734,6 +1769,8 @@ export function useGraph() {
   onScopeDispose(() => {
     window.removeEventListener("keydown", onCopyPasteKey);
     window.removeEventListener("keydown", onDeleteKey);
+    window.removeEventListener("mousemove", trackConnectPointer);
+    window.removeEventListener("touchmove", trackConnectPointer);
     offConnect();
     offConnectStart();
     offConnectEnd();
@@ -1865,6 +1902,7 @@ export function useGraph() {
   return {
     nodes,
     edges,
+    connectSnap,
     connectedSources,
     connectedTargets,
     boxSelectedIds,

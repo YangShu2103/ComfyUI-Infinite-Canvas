@@ -1,7 +1,7 @@
 <template>
   <div
     class="demo-node"
-    :class="{ 'is-connect-hot': connectHot }"
+    :class="{ 'is-connect-hot': connectHot, 'is-connecting': connecting }"
     :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mousedown="onRootMouseDown"
     @mouseenter="enterActions"
@@ -11,7 +11,7 @@
       type="target"
       :position="Position.Left"
       class="node-port"
-      :class="{ 'is-on': showPort, 'is-connected': targetConnected }"
+      :class="{ 'is-on': showInputPort, 'is-connected': targetConnected }"
     >
       <div class="port-hit" />
     </Handle>
@@ -529,7 +529,7 @@
       type="source"
       :position="Position.Right"
       class="node-port"
-      :class="{ 'is-on': showPort, 'is-connected': sourceConnected }"
+      :class="{ 'is-on': showOutputPort, 'is-connected': sourceConnected }"
     >
       <div class="port-hit" />
     </Handle>
@@ -982,11 +982,28 @@ onBeforeUnmount(() => {
   }
 });
 
-// 正在拉线时（connectionStartHandle 非空），所有节点都显示端口
+// 正在拉线时（connectionStartHandle 非空），另一侧可落线的端口会亮起
 const connecting = computed(() => !!flow.connectionStartHandle.value);
 
-// 选中节点 或 拉线中 才显示端口
-const showPort = computed(() => props.selected || connecting.value);
+// 拉线方向：从输出口拉线只能落在别人的入口，从输入口拉线只能落在别人的出口，
+// 所以拉线时只亮对向的端口——直观，也不会让用户以为落点在被拉起的同一侧
+const connectDirection = computed(() => flow.connectionStartHandle.value?.type || null);
+// 正在被拉起来的那个端口属于自己时，即使它是"同向"的也要保留，不然一拉线端口就消失了
+const isConnectStart = computed(
+  () => !!connectDirection.value && flow.connectionStartHandle.value?.nodeId === props.id
+);
+
+// 不拉线时选中节点两侧端口都显示；拉线时只显示能落线的一侧（起点保留自己那一侧）
+const showInputPort = computed(() =>
+  connectDirection.value
+    ? connectDirection.value === "source" || isConnectStart.value
+    : props.selected
+);
+const showOutputPort = computed(() =>
+  connectDirection.value
+    ? connectDirection.value === "target" || isConnectStart.value
+    : props.selected
+);
 
 // 拉线时整块节点都是连接热区，其它节点悬停时给个提示；起点节点本身不提示
 const connectHot = computed(() => {
@@ -2141,6 +2158,25 @@ async function run() {
 .vue-flow__handle.node-port.is-on .port-hit,
 .vue-flow__handle.node-port.is-connected .port-hit,
 .demo-node:hover .vue-flow__handle.node-port .port-hit {
+  pointer-events: all;
+}
+
+/* 拉线时只显示能落线的一侧（is-on 由拉线方向决定）：另一侧连"已连接"和悬停都不再亮，
+   右侧出口在拉线过程中等于不存在，也就不会让人以为可以落在同一侧 */
+.demo-node.is-connecting .vue-flow__handle.node-port {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.demo-node.is-connecting .vue-flow__handle.node-port.is-on {
+  opacity: 1;
+}
+
+.demo-node.is-connecting .vue-flow__handle.node-port .port-hit {
+  pointer-events: none;
+}
+
+.demo-node.is-connecting .vue-flow__handle.node-port.is-on .port-hit {
   pointer-events: all;
 }
 

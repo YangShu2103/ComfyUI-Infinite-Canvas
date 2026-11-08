@@ -11,6 +11,8 @@
       @drop.prevent="onDrop"
       @contextmenu="onContextMenu"
     >
+      <!-- connection-radius 设为 0：落点只认"鼠标在节点上"，
+           否则光标离节点还有 70px 就会被端口吸过去 -->
       <VueFlow
         id="demo"
         v-model:nodes="nodes"
@@ -21,7 +23,7 @@
         :min-zoom="0.02"
         :max-zoom="2"
         :zoom-on-double-click="false"
-        :connection-radius="70"
+        :connection-radius="0"
         connection-mode="strict"
         only-render-visible-elements
       >
@@ -68,8 +70,8 @@
 </template>
 
 <script setup>
-import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
-import { VueFlow, getBezierPath, useVueFlow } from "@vue-flow/core";
+import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref } from "vue";
+import { VueFlow, getBezierPath } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
 import CanvasEdge from "./components/Edge/index.vue";
@@ -86,8 +88,8 @@ const { canvasGridColor } = useTheme();
 
 // ---------------------------------------------------------------- 连接预览线吸附
 // 拉线时整块节点都是连接热区，所以预览线也要吸到节点的默认端口（左入 / 右出），
-// 而不是停在鼠标位置直接插进节点里，保持和正常连线一致的视觉
-const connectSnap = ref(null);
+// 而不是停在鼠标位置直接插进节点里，保持和正常连线一致的视觉。
+// 吸附点由 useGraph 在拉线过程中计算（它还要用同一个结果决定松手连到哪个节点）
 
 function connectLinePath(line) {
   // Vue Flow 靠近合法端口时已经把 connectionPosition 换成端口坐标，这里只补节点主体的情况
@@ -116,6 +118,7 @@ const defaultViewport = { x: 0, y: 0, zoom: 0.7 };
 const {
   nodes,
   edges,
+  connectSnap,
   connectedSources,
   connectedTargets,
   boxSelectedIds,
@@ -183,52 +186,8 @@ function fitCanvasView() {
 // ---------------------------------------------------------------- 划线切断连线
 // 按住 Ctrl / Option 在画布空白处拖拽，红线扫过的连线直接删除。
 // pointerdown 必须挂在捕获阶段，否则 Vue Flow 会先把它当成画布平移
-const flow = useVueFlow("demo");
 const wrapEl = ref(null);
 const cutting = ref(false);
-
-// 拉线时整块节点都是连接热区：鼠标压在节点身上就把预览线吸到该节点的默认端口
-// pointermove 的 target 就是光标下的元素，比 elementFromPoint 便宜，节点多时也不卡
-function trackConnectPointer(event) {
-  const start = flow.connectionStartHandle.value;
-  const target = event.target;
-  if (!start || !(target instanceof Element) || target.closest(".node-panel")) {
-    connectSnap.value = null;
-    return;
-  }
-
-  const nodeId = target.closest(".vue-flow__node")?.dataset.id;
-  const node = nodeId && nodeId !== start.nodeId ? flow.findNode(nodeId) : null;
-  const size = node?.dimensions;
-  if (!node || !size?.width || !size?.height) {
-    connectSnap.value = null;
-    return;
-  }
-
-  // 从输出口往右拉吸附到目标的左侧入口，从输入口往左拉吸附到目标的右侧出口
-  const toTarget = start.type === "source";
-  connectSnap.value = {
-    x: toTarget ? node.computedPosition.x : node.computedPosition.x + size.width,
-    y: node.computedPosition.y + size.height / 2,
-    position: toTarget ? "left" : "right",
-  };
-}
-
-watch(
-  () => flow.connectionStartHandle.value,
-  (handle) => {
-    if (handle) {
-      window.addEventListener("pointermove", trackConnectPointer, true);
-    } else {
-      window.removeEventListener("pointermove", trackConnectPointer, true);
-      connectSnap.value = null;
-    }
-  }
-);
-
-onBeforeUnmount(() => {
-  window.removeEventListener("pointermove", trackConnectPointer, true);
-});
 
 const cutPoints = ref([]);
 const cutSize = ref({ w: 0, h: 0 });
