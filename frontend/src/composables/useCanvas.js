@@ -1,4 +1,4 @@
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 
 const API = "/infinite_canvas/api/canvases";
 const LAST_KEY = "infinite-canvas:last";
@@ -30,7 +30,15 @@ function rememberLast(id) {
   }
 }
 
-export function useCanvas({ nodes, edges, viewport, exportCanvas, loadCanvas, resetCanvas }) {
+export function useCanvas({
+  nodes,
+  edges,
+  viewport,
+  layoutRevision,
+  exportCanvas,
+  loadCanvas,
+  resetCanvas,
+}) {
   const list = ref([]);
   const currentId = ref("");
   const currentName = ref("");
@@ -170,7 +178,40 @@ export function useCanvas({ nodes, edges, viewport, exportCanvas, loadCanvas, re
     }
   }
 
-  watch([nodes, edges, viewport], scheduleSave, { deep: true });
+  // 自动保存的触发条件：节点位置/尺寸/参数/素材、连线、视口。
+  // 不能用 deep watch：初次挂载 200+ 节点时 Vue Flow 会连续改节点对象，
+  // deep watcher 会在同一次 flush 里被反复触发（Vue 报 Maximum recursive updates），
+  // 拖拽时也会每帧深度遍历整张图
+  // 素材指纹：id + 文件名，就地替换（裁剪/扩图回写）也能感知到
+  const mediaFingerprint = (list) =>
+    (list || []).map((item) => `${item.id}/${item.ref?.filename || ""}`).join(",");
+
+  // 注意：这里列出的字段要和 exportCanvas 保存的内容保持一致，
+  // 以后往 node.data 里加需要持久化的字段时别忘了加进来，否则改动不会触发自动保存
+  const saveSignature = computed(() =>
+    JSON.stringify([
+      // 坐标不逐个比较：1000 个节点时拖拽每帧都要序列化一次。
+      // 拖动结束 / 撤销重做会自增 layoutRevision，用它通知保存
+      layoutRevision?.value || 0,
+      nodes.value.map((node) => [
+        node.id,
+        node.data?.label,
+        node.data?.w,
+        node.data?.h,
+        node.data?.index,
+        node.data?.workflow,
+        node.data?.params,
+        node.data?.randomFields,
+        mediaFingerprint(node.data?.media),
+        mediaFingerprint(node.data?.inputMedia),
+      ]),
+      edges.value.map((edge) => [edge.id, edge.source, edge.target]),
+      viewport.value.x,
+      viewport.value.y,
+      viewport.value.zoom,
+    ])
+  );
+  watch(saveSignature, scheduleSave, { flush: "post" });
 
   return {
     list,

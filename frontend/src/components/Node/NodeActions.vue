@@ -1,6 +1,6 @@
 <template>
   <!-- 节点上方扇形操作：两边小、中间大 -->
-  <div class="node-actions" :class="{ 'is-open': visible }">
+  <div v-if="fanMounted || panelOpen" class="node-actions" :class="{ 'is-open': fanOpen }">
     <button
       v-for="(action, i) in actions"
       :key="action.key"
@@ -211,6 +211,30 @@ const emit = defineEmits(["select"]);
 const graph = inject("canvasGraph");
 
 const panelOpen = ref(false);
+
+// 扇形按钮只在悬停/选中时挂载：节点一多就常驻几百个按钮 DOM，没必要。
+// 先挂载、下一帧再加 is-open，保住展开动画；收起动画结束后再卸载
+const fanMounted = ref(false);
+const fanOpen = ref(false);
+let fanTimer = 0;
+watch(
+  () => props.visible,
+  (on) => {
+    clearTimeout(fanTimer);
+    if (on) {
+      fanMounted.value = true;
+      nextTick(() => {
+        fanOpen.value = true;
+      });
+    } else {
+      fanOpen.value = false;
+      fanTimer = setTimeout(() => {
+        fanMounted.value = false;
+      }, 220);
+    }
+  },
+  { immediate: true }
+);
 // 面板两阶段渲染：先挂右列（Teleport 目标），下一帧再挂编辑器
 const showContent = ref(false);
 const controlsEl = ref(null);

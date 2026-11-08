@@ -3,7 +3,7 @@
     <div
       ref="wrapEl"
       class="flow-wrap"
-      :class="{ 'is-drop-file': dragging }"
+      :class="{ 'is-drop-file': dragging, 'is-far': isFarZoom }"
       @dblclick.capture="onDblClick"
       @click="rememberNode"
       @dragover.prevent="onDragOver"
@@ -18,10 +18,11 @@
         :node-types="nodeTypes"
         :edge-types="edgeTypes"
         :default-viewport="defaultViewport"
-        :min-zoom="0.1"
+        :min-zoom="0.02"
         :max-zoom="2"
         :zoom-on-double-click="false"
         :connection-radius="70"
+        only-render-visible-elements
       >
         <Background :pattern-color="canvasGridColor" :gap="20" />
       </VueFlow>
@@ -73,6 +74,10 @@ import { useTheme } from "./composables/useTheme.js";
 
 const { canvasGridColor } = useTheme();
 
+// 缩小到 45% 以下时，节点和卡片的阴影基本看不出来，但每一层阴影都要单独合成；
+// 节点一多就是纯 GPU 负担，直接关掉
+const isFarZoom = computed(() => (Number(viewport.value?.zoom) || 1) < 0.45);
+
 const nodeTypes = { demo: markRaw(DemoNode) };
 const edgeTypes = { canvas: markRaw(CanvasEdge) };
 
@@ -82,6 +87,9 @@ const defaultViewport = { x: 0, y: 0, zoom: 0.7 };
 const {
   nodes,
   edges,
+  connectedSources,
+  connectedTargets,
+  visibleNodeIds,
   viewport,
   runStates,
   submitExecution,
@@ -114,6 +122,7 @@ const {
   captureUndo,
   undo,
   cutEdges,
+  layoutRevision,
 } = useGraph();
 
 // 最近一次点过的节点：纸飞机按钮优先聚焦它（没有点过节点就只是恢复默认视图）
@@ -243,40 +252,55 @@ function distanceToSegment(point, a, b) {
   return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
 }
 
-// 一次划线内把每条连线的路径采样成屏幕坐标点（含包围盒，用于快速排除）
+// 划线开始时不采样路径点，只取每条连线的包围盒（getBBox 很快）。
+// 以前每条边都要 getTotalLength + 逐个 getPointAtLength，那是 O(n²)，
+// 连线一多按下去就会卡好几秒
 function buildCutSamples() {
-  const samples = [];
+  const entries = [];
   const wrap = wrapEl.value;
-  if (!wrap) return samples;
+  if (!wrap) return entries;
 
   const zoom = viewport.value.zoom || 1;
   const offsetX = viewport.value.x || 0;
   const offsetY = viewport.value.y || 0;
-  const step = Math.max(4 / zoom, 2);
 
   for (const path of wrap.querySelectorAll(".vue-flow__edge-path")) {
     const group = path.closest(".vue-flow__edge");
-    const total = path.getTotalLength ? path.getTotalLength() : 0;
-    if (!group || !total) continue;
-
-    const points = [];
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (let length = 0; length <= total; length += step) {
-      const point = path.getPointAtLength(length);
-      const x = point.x * zoom + offsetX;
-      const y = point.y * zoom + offsetY;
-      points.push({ x, y });
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-    samples.push({ group, points, minX, minY, maxX, maxY });
+    if (!group || !path.getBBox) continue;
+    const box = path.getBBox();
+    if (!box.width && !box.height) continue;
+    entries.push({
+      group,
+      path,
+      minX: box.x * zoom + offsetX,
+      minY: box.y * zoom + offsetY,
+      maxX: (box.x + box.width) * zoom + offsetX,
+      maxY: (box.y + box.height) * zoom + offsetY,
+      points: null,
+    });
   }
-  return samples;
+  return entries;
+}
+
+// 线段扫到包围盒后，才真正把这条路径采样成屏幕坐标点，结果缓存在 entry 上
+function sampleEntry(entry) {
+  if (entry.points) return entry.points;
+  const zoom = viewport.value.zoom || 1;
+  const offsetX = viewport.value.x || 0;
+  const offsetY = viewport.value.y || 0;
+  const step = Math.max(5 / zoom, 2);
+  const total = entry.path.getTotalLength ? entry.path.getTotalLength() : 0;
+  const points = [];
+  for (let length = 0; length < total; length += step) {
+    const point = entry.path.getPointAtLength(length);
+    points.push({ x: point.x * zoom + offsetX, y: point.y * zoom + offsetY });
+  }
+  if (total) {
+    const end = entry.path.getPointAtLength(total);
+    points.push({ x: end.x * zoom + offsetX, y: end.y * zoom + offsetY });
+  }
+  entry.points = points;
+  return points;
 }
 
 // 新线段与已采样连线的最近距离：包围盒先排除，命中就高亮（只加不撤）
@@ -294,7 +318,8 @@ function testCutSegment(a, b) {
       entry.maxY < minY ||
       entry.minY > maxY
     ) continue;
-    for (const point of entry.points) {
+    const points = sampleEntry(entry);
+    for (const point of points) {
       if (distanceToSegment(point, a, b) <= CUT_THRESHOLD) {
         entry.group.classList.add("is-cutting");
         markedGroups.add(entry.group);
@@ -390,6 +415,10 @@ provide("canvasGraph", {
   nodeBusy,
   replaceMediaItem,
   spawnDetachedNode,
+  connectedSources,
+  connectedTargets,
+  visibleNodeIds,
+  viewport,
   runStates,
   submitExecution,
   trackPrompt,
@@ -399,7 +428,15 @@ provide("canvasGraph", {
 });
 
 // 画布管理：列表 / 切换 / 自动保存
-const canvasStore = useCanvas({ nodes, edges, viewport, exportCanvas, loadCanvas, resetCanvas });
+const canvasStore = useCanvas({
+  nodes,
+  edges,
+  viewport,
+  layoutRevision,
+  exportCanvas,
+  loadCanvas,
+  resetCanvas,
+});
 provide("canvasStore", canvasStore);
 onMounted(() => canvasStore.bootstrap());
 
@@ -514,6 +551,16 @@ async function onDrop(event) {
 
 .flow-wrap :deep(.vue-flow__node.selected) {
   box-shadow: none;
+}
+
+/* 缩小到 45% 以下：关掉节点和素材卡片的阴影与层提升，减少合成开销 */
+.flow-wrap.is-far :deep(.demo-node),
+.flow-wrap.is-far :deep(.media-stack-card) {
+  box-shadow: none;
+}
+
+.flow-wrap.is-far :deep(.media-stack-card) {
+  will-change: auto;
 }
 
 /* 拖入文件时的落点提示框 */

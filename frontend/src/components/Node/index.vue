@@ -31,7 +31,7 @@
     </div> -->
 
     <!-- 媒体预览：只显示本节点自己的素材；上游媒体只在面板里展示 -->
-    <div v-if="ownMedia.length" class="node-media">
+    <div v-if="!culled && ownMedia.length" class="node-media">
       <div class="media-stack">
         <div
           v-for="(item, i) in ownMedia"
@@ -124,7 +124,7 @@
         />
       </div>
     </div>
-    <div v-else-if="!showProgress" class="node-empty">
+    <div v-else-if="!culled && !showProgress" class="node-empty">
       <!-- 只有这块虚线区域是上传热区，点节点其他地方只做选中/展开面板 -->
       <button
         class="node-upload"
@@ -186,7 +186,7 @@
 
     <!-- 运行态：整体流光背景 + 上下布局（图标在上，文字在下），不显示假百分比 -->
     <div
-      v-if="showProgress"
+      v-if="showProgress && !culled"
       class="node-progress"
     >
       <div v-if="runState?.status === 'error'" class="node-progress-body">
@@ -222,6 +222,7 @@
     </div>
 
     <button
+      v-if="actionHover || selected"
       class="node-delete"
       type="button"
       title="删除节点"
@@ -243,6 +244,7 @@
 
     <!-- 右下角拖拽缩放：只改节点自身尺寸，面板/工具栏尺寸不变 -->
     <div
+      v-if="actionHover || selected"
       class="node-resize"
       title="拖动调整节点大小"
       @pointerdown.stop.prevent="startResize"
@@ -980,8 +982,10 @@ const connecting = computed(() => !!flow.connectionStartHandle.value);
 const showPort = computed(() => props.selected || connecting.value);
 
 // 已经连出 / 连入的端口常驻显示
-const sourceConnected = computed(() => flow.edges.value.some((e) => e.source === props.id));
-const targetConnected = computed(() => flow.edges.value.some((e) => e.target === props.id));
+// 是否已连线：读取 useGraph 汇总好的 Set，
+// 不要每个节点都 some() 扫一遍全部连线（N 个节点 × E 条连线）
+const sourceConnected = computed(() => !!graph?.connectedSources?.value?.has(props.id));
+const targetConnected = computed(() => !!graph?.connectedTargets?.value?.has(props.id));
 
 // 删除第 i 张自身素材（只从节点上移除，input 文件保留，由资产面板统一管理）
 function removeMediaAt(i) {
@@ -1047,6 +1051,20 @@ function onFilesPicked(event) {
 
 // 当前节点的运行状态（由 useGraph 统一维护，不写进画布数据）
 const runState = computed(() => graph?.runStates?.[props.id] || null);
+
+// 视口裁剪：视口外的节点不挂载素材/预览内容，省掉大量 DOM 与图片解码。
+// 素材引用与连线都在 useGraph 的 nodes/edges 上，和组件挂不挂载无关，
+// 所以上游不在视口时，下游依然能拿到它的图片。
+// 选中、运行中的节点始终保留，避免状态丢失
+const culled = computed(() => {
+  if (props.selected) return false;
+  const status = runState.value?.status;
+  if (status && status !== "idle") return false;
+  // 缩到 8% 以下时节点只剩几个像素，图片内容没有意义，
+  // 一律不渲染，避免全览时几百张图同时解码
+  if ((Number(graph?.viewport?.value?.zoom) || 1) < 0.08) return true;
+  return graph?.visibleNodeIds ? !graph.visibleNodeIds.value.has(props.id) : false;
+});
 
 // 运行中或排队中：运行按钮切换成"中断"
 const isBusy = computed(
@@ -1641,11 +1659,12 @@ async function run() {
   box-shadow: 0 10px 24px var(--c-shadow);
   cursor: pointer;
   transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
-  will-change: transform;
 }
 
+/* will-change 只给当前卡片：几百张卡片各自提升成合成层会吃掉大量显存 */
 .media-stack-card.is-active {
   border-color: transparent;
+  will-change: transform;
 }
 
 /* 素材卡片按内容区大小自适应，用 cover 铺满卡片；单个素材时卡片比例已经

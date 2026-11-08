@@ -1,4 +1,4 @@
-import { nextTick, onScopeDispose, reactive, ref, watch } from "vue";
+import { computed, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
 import { useVueFlow } from "@vue-flow/core";
 
 // 默认节点按 16:9 出图：宽度 454、高度 226，使素材卡片区域（内容区 × 84%）正好 16:9，
@@ -176,6 +176,14 @@ function hydrateMediaItem(item) {
   return { ...item, url: mediaUrl(item.ref), thumbUrl: mediaThumbUrl(item.ref, 640, item.id) };
 }
 
+// 素材指纹：除了 id 还带上文件名。
+// 裁剪/扩图回写时是就地替换，id 保持不变但内容已经变了
+function mediaKeyOf(node) {
+  return (node.data?.media || [])
+    .map((item) => `${item.id}/${item.ref?.filename || ""}`)
+    .join(",");
+}
+
 export function useGraph() {
   const flow = useVueFlow("demo");
 
@@ -183,6 +191,8 @@ export function useGraph() {
   const edges = ref([]);
   // 画布的平移/缩放，与节点坐标一起保存，刷新后回到上次看到的位置
   const viewport = ref({ ...DEFAULT_VIEWPORT });
+  // 坐标变更版本号：只在拖动结束/撤销重做时自增，供自动保存判断是否需要落盘
+  const layoutRevision = ref(0);
 
   let nodeSeq = 0;
   let edgeSeq = 0;
@@ -678,19 +688,24 @@ export function useGraph() {
     if (kept.length !== list.length) node.data.inputMedia = kept;
   }
 
-  // 监听连线被删除（手动删除校验，节点删除也会触发）
-  watch(
-    edges,
-    (next, prev) => {
-      if (loading || restoring) return;
-      for (const edge of prev || []) {
-        if (!next.some((item) => item.id === edge.id)) {
-          dropInputMedia(edge.target, edge.source);
-        }
-      }
-    },
-    { deep: true }
-  );
+  // 监听连线被删除（手动删除校验，节点删除也会触发）。
+  // 不能用 deep watch：拖动节点时 Vue Flow 每帧都在改连线的 sourceX/sourceY，
+  // deep 会把全部连线深遍历一遍；只比较 id 拼接出的签名即可
+  const edgeEnds = new Map();
+  const edgeSignature = computed(() => edges.value.map((edge) => edge.id).join(","));
+  watch(edgeSignature, () => {
+    const alive = new Set();
+    for (const edge of edges.value) {
+      alive.add(edge.id);
+      edgeEnds.set(edge.id, { source: edge.source, target: edge.target });
+    }
+    for (const [id, ends] of [...edgeEnds]) {
+      if (alive.has(id)) continue;
+      edgeEnds.delete(id);
+      if (loading || restoring) continue;
+      dropInputMedia(ends.target, ends.source);
+    }
+  });
 
   // 上游自身媒体被重排/删除/追加后，同步给所有直接下游
   function syncDownstream(sourceId) {
@@ -728,30 +743,31 @@ export function useGraph() {
   function snapshotMediaKeys() {
     mediaKeys.clear();
     for (const node of nodes.value) {
-      mediaKeys.set(node.id, (node.data.media || []).map((item) => item.id).join(","));
+      mediaKeys.set(node.id, mediaKeyOf(node));
     }
   }
 
-  watch(
-    nodes,
-    () => {
-      if (loading || restoring) return;
-      const alive = new Set();
-      for (const node of nodes.value) {
-        alive.add(node.id);
-        const key = (node.data.media || []).map((item) => item.id).join(",");
-        const prev = mediaKeys.get(node.id);
-        mediaKeys.set(node.id, key);
-        if (prev !== undefined && prev !== key) syncDownstream(node.id);
-      }
-
-      // 节点被删掉后清掉快照
-      for (const id of [...mediaKeys.keys()]) {
-        if (!alive.has(id)) mediaKeys.delete(id);
-      }
-    },
-    { deep: true }
+  // 只比较素材指纹：拖拽时节点 position 每帧都在变，
+  // deep watch 会把所有节点的 data（素材、参数）整体深遍历一遍
+  const mediaSignature = computed(() =>
+    nodes.value.map((node) => `${node.id}:${mediaKeyOf(node)}`).join("|")
   );
+  watch(mediaSignature, () => {
+    if (loading || restoring) return;
+    const alive = new Set();
+    for (const node of nodes.value) {
+      alive.add(node.id);
+      const key = mediaKeyOf(node);
+      const prev = mediaKeys.get(node.id);
+      mediaKeys.set(node.id, key);
+      if (prev !== undefined && prev !== key) syncDownstream(node.id);
+    }
+
+    // 节点被删掉后清掉快照
+    for (const id of [...mediaKeys.keys()]) {
+      if (!alive.has(id)) mediaKeys.delete(id);
+    }
+  });
 
   // ------------------------------------------------------------ 撤销
   // 快照式撤销：操作前把整张画布（节点结构、节点数据、素材引用）存一份。
@@ -825,6 +841,8 @@ export function useGraph() {
     edges.value = snapshot.edges.map((edge) => ({ ...edge }));
     nodeSeq = snapshot.seq?.node ?? nodeSeq;
     edgeSeq = snapshot.seq?.edge ?? edgeSeq;
+    // 撤销/重做可能只改了坐标（节点 id 不变），要单独通知自动保存
+    layoutRevision.value += 1;
     // 直接刷新媒体快照，避免还原这一轮被当成"素材变化"去同步下游
     snapshotMediaKeys();
 
@@ -1291,16 +1309,57 @@ export function useGraph() {
         target.position = { x: item.position.x, y: item.position.y };
       }
     }
+    // 坐标不在保存签名里逐帧比较（1000 个节点时拖拽每帧都要序列化一次），
+    // 拖动结束后用一个版本号通知自动保存
+    layoutRevision.value += 1;
   });
 
-  // 平移/缩放变化同步到本地，自动保存一并写入
+  // 端口是否已连线：在这里一次汇总成 Set，
+  // 否则每个节点都要自己 some() 扫一遍全部连线（N 个节点 × E 条连线）
+  const connectedSources = computed(() => new Set(edges.value.map((edge) => edge.source)));
+  const connectedTargets = computed(() => new Set(edges.value.map((edge) => edge.target)));
+
+  // 视口裁剪：当前视口内（外扩一圈缓冲）的节点 id。
+  // 只决定节点内容挂不挂载，素材引用、连线和上下游传递都在 nodes/edges 上，不受影响
+  const VISIBLE_BUFFER = 320;
+  const viewSize = ref({ width: window.innerWidth, height: window.innerHeight });
+  const onViewResize = () => {
+    viewSize.value = { width: window.innerWidth, height: window.innerHeight };
+  };
+  window.addEventListener("resize", onViewResize);
+  onScopeDispose(() => window.removeEventListener("resize", onViewResize));
+
+  const visibleNodeIds = computed(() => {
+    const panned = viewport.value || { x: 0, y: 0, zoom: 1 };
+    const zoom = Number(panned.zoom) || 1;
+    // 视口坐标反推画布坐标
+    const minX = (-panned.x - VISIBLE_BUFFER) / zoom;
+    const maxX = (-panned.x + viewSize.value.width + VISIBLE_BUFFER) / zoom;
+    const minY = (-panned.y - VISIBLE_BUFFER) / zoom;
+    const maxY = (-panned.y + viewSize.value.height + VISIBLE_BUFFER) / zoom;
+    const ids = new Set();
+    for (const node of nodes.value) {
+      const w = Number(node.data?.w) || NODE_WIDTH;
+      const h = Number(node.data?.h) || NODE_HEIGHT;
+      const x = Number(node.position?.x) || 0;
+      const y = Number(node.position?.y) || 0;
+      if (x + w >= minX && x <= maxX && y + h >= minY && y <= maxY) ids.add(node.id);
+    }
+    return ids;
+  });
+
+  // 平移/缩放变化同步到本地；只比较三个数值，避免 deep 遍历整个视口对象
   watch(
-    () => flow.viewport.value,
-    (value) => {
-      if (loading || !value) return;
-      viewport.value = { x: value.x, y: value.y, zoom: value.zoom };
+    () => {
+      const value = flow.viewport.value;
+      return value ? `${value.x}|${value.y}|${value.zoom}` : "";
     },
-    { deep: true }
+    () => {
+      if (loading) return;
+      const value = flow.viewport.value;
+      if (!value) return;
+      viewport.value = { x: value.x, y: value.y, zoom: value.zoom };
+    }
   );
 
   // ------------------------------------------------------------ 异步执行
@@ -1731,7 +1790,11 @@ export function useGraph() {
   return {
     nodes,
     edges,
+    connectedSources,
+    connectedTargets,
+    visibleNodeIds,
     viewport,
+    layoutRevision,
     runStates,
     submitExecution,
     trackPrompt,
