@@ -1,0 +1,13 @@
+# 发布到 Comfy Registry 时排除的文件（避免把依赖和本地数据打包上去）
+
+__pycache__/
+*.py[cod]
+frontend/node_modules/
+frontend/.vite/
+frontend/src/
+frontend/package-lock.json
+user/
+thumbs/
+canvas_settings.json
+prompts.json
+.DS_Store

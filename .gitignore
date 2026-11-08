@@ -5,6 +5,10 @@ __pycache__/
 # 前端依赖与本地调试产物（dist 需要提交，供普通用户直接使用）
 frontend/node_modules/
 frontend/.vite/
+# 本机开发用的 ComfyUI 地址，不进仓库
+frontend/.env.local
+# comfy node publish 打包产物
+node.zip
 
 # 本地数据（正常情况下存在 ComfyUI 用户目录，这里只是兜底）
 user/

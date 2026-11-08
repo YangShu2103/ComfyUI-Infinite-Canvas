@@ -1,0 +1,17 @@
+[project]
+name = "infinite-canvas"
+description = "把 ComfyUI 的生成流程放进一张无限画布：节点即素材，拖线即派发，支持真实进度、资产库与提示词库"
+version = "0.1.0"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/YangShu2103/ComfyUI-Infinite-Canvas"
+
+[tool.comfy]
+# 在 https://registry.comfy.org 的账户页可以看到自己的 PublisherId
+PublisherId = "yangshu"
+DisplayName = "Infinite Canvas"
+Icon = ""
+requires-comfyui = ">=0.3.0"
