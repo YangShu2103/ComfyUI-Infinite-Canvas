@@ -156,6 +156,8 @@ const {
   undo,
   cutEdges,
   layoutRevision,
+  setRunScope,
+  restoreRunStates,
 } = useGraph();
 
 // 最近一次点过的节点：纸飞机按钮优先聚焦它（没有点过节点就只是恢复默认视图）
@@ -473,6 +475,8 @@ const canvasStore = useCanvas({
   exportCanvas,
   loadCanvas,
   resetCanvas,
+  setRunScope,
+  restoreRunStates,
 });
 provide("canvasStore", canvasStore);
 onMounted(() => canvasStore.bootstrap());

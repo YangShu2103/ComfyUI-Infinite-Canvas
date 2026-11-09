@@ -1483,6 +1483,56 @@ export function useGraph() {
   const pollers = new Map();
   let socket = null;
 
+  // ------------------------------------------------------------ 跨刷新恢复运行态
+  // prompt -> 节点的映射只在内存里，刷新页面后就对不上了；把这张表存一份到
+  // localStorage，重新进入画布时再向 ComfyUI 的队列核对一次，以队列为准恢复状态
+  const PROMPT_MAP_KEY = "infinite-canvas:prompt-nodes";
+  const PROMPT_MAP_LIMIT = 50;
+  // 恢复时的有效期：超过一天的任务 ComfyUI 的历史里多半已经清掉
+  const RESTORE_MAX_AGE = 24 * 60 * 60 * 1000;
+  // 当前画布 id：不同画布的节点 id 都从 1 开始，映射必须按画布隔离，否则会串台
+  let runScope = "";
+
+  function readPromptMap() {
+    try {
+      const value = JSON.parse(localStorage.getItem(PROMPT_MAP_KEY) || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writePromptMap(map) {
+    try {
+      localStorage.setItem(PROMPT_MAP_KEY, JSON.stringify(map));
+    } catch {
+      /* 隐私模式下忽略 */
+    }
+  }
+
+  function rememberPrompt(promptId, nodeId, startedAt) {
+    const map = readPromptMap();
+    map[promptId] = { nodeId, startedAt, scope: runScope };
+    const entries = Object.entries(map);
+    if (entries.length > PROMPT_MAP_LIMIT) {
+      entries.sort((a, b) => (b[1]?.startedAt || 0) - (a[1]?.startedAt || 0));
+      writePromptMap(Object.fromEntries(entries.slice(0, PROMPT_MAP_LIMIT)));
+      return;
+    }
+    writePromptMap(map);
+  }
+
+  function forgetPrompt(promptId) {
+    const map = readPromptMap();
+    if (!(promptId in map)) return;
+    delete map[promptId];
+    writePromptMap(map);
+  }
+
+  function setRunScope(id) {
+    runScope = String(id || "");
+  }
+
   function executionClientId() {
     const KEY = "infinite_canvas_client_id";
     let value = localStorage.getItem(KEY);
@@ -1602,6 +1652,7 @@ export function useGraph() {
     stopPolling(promptId);
     promptNodes.delete(promptId);
     nodePrompts.delete(nodeId);
+    forgetPrompt(promptId);
     const state = runStates[nodeId];
     if (state) {
       state.status = "error";
@@ -1618,6 +1669,7 @@ export function useGraph() {
     stopPolling(promptId);
     promptNodes.delete(promptId);
     nodePrompts.delete(nodeId);
+    forgetPrompt(promptId);
 
     const state = runStates[nodeId];
     const items = itemsFromRefs(images);
@@ -1704,10 +1756,13 @@ export function useGraph() {
     if (runStates[nodeId]?.status === "waiting") delete runStates[nodeId];
   }
 
-  // 提交成功后先按"排队中"接管，第一次查询会立刻纠正成运行中
-  function trackPrompt(nodeId, promptId) {
+  // 提交成功后先按"排队中"接管，第一次查询会立刻纠正成运行中。
+  // startedAt 由调用方给出：刷新后恢复任务时沿用原来的提交时刻，计时不会从头开始
+  function trackPrompt(nodeId, promptId, startAt = 0) {
+    const startedAt = Number(startAt) || Date.now();
     promptNodes.set(promptId, nodeId);
     nodePrompts.set(nodeId, promptId);
+    rememberPrompt(promptId, nodeId, startedAt);
     runStates[nodeId] = {
       status: "queued",
       error: "",
@@ -1717,14 +1772,13 @@ export function useGraph() {
       stepMax: 0,
       promptId,
       // 从提交开始计时（排队时间也算），界面显示已等/已用时长
-      startedAt: Date.now(),
+      startedAt,
     };
     ensureSocket();
 
-    const started = Date.now();
     const timer = setInterval(() => {
       // 超过 30 分钟视为异常，避免无限挂起
-      if (Date.now() - started > 30 * 60 * 1000) {
+      if (Date.now() - startedAt > 30 * 60 * 1000) {
         failPrompt(nodeId, promptId, "等待超时，任务可能仍在执行");
         return;
       }
@@ -1735,6 +1789,52 @@ export function useGraph() {
     setTimeout(() => checkPrompt(nodeId, promptId), 800);
   }
 
+  // 重新进入画布后把 ComfyUI 里仍在跑的任务挂回节点：排队/运行中的继续跟进进度，
+  // 期间已经跑完的把产物补进节点；ComfyUI 里查不到的（重启过 / 被清理）直接丢弃映射
+  async function restoreRunStates() {
+    const map = readPromptMap();
+    const pending = [];
+    let changed = false;
+    for (const [promptId, entry] of Object.entries(map)) {
+      const startedAt = Number(entry?.startedAt) || 0;
+      const valid =
+        entry?.scope === runScope &&
+        Date.now() - startedAt < RESTORE_MAX_AGE &&
+        nodes.value.some((node) => node.id === entry?.nodeId);
+      if (!valid) {
+        delete map[promptId];
+        changed = true;
+        continue;
+      }
+      pending.push([promptId, entry.nodeId, startedAt]);
+    }
+    if (changed) writePromptMap(map);
+    if (!pending.length) return;
+
+    // 先跟 ComfyUI 核对一遍，只恢复它还在跟踪的任务，避免恢复出永远跑不完的假状态
+    let known = null;
+    try {
+      const response = await fetch("/infinite_canvas/api/queue/history?limit=200");
+      const data = await response.json();
+      known = new Set(
+        [...(data.running || []), ...(data.pending || []), ...(data.items || [])].map(
+          (item) => item.promptId
+        )
+      );
+    } catch {
+      // ComfyUI 连不上时先按队列里的记录恢复，轮询会继续纠错
+      known = null;
+    }
+
+    for (const [promptId, nodeId, startedAt] of pending) {
+      if (known && !known.has(promptId)) {
+        forgetPrompt(promptId);
+        continue;
+      }
+      trackPrompt(nodeId, promptId, startedAt);
+    }
+  }
+
   // 先清本地状态（同步执行，删除节点时可以立即生效），返回要取消的任务 id
   function clearRunState(nodeId) {
     const state = runStates[nodeId];
@@ -1743,6 +1843,7 @@ export function useGraph() {
       settledPrompts.add(promptId);
       stopPolling(promptId);
       promptNodes.delete(promptId);
+      forgetPrompt(promptId);
     }
     nodePrompts.delete(nodeId);
     delete runStates[nodeId];
@@ -1923,6 +2024,8 @@ export function useGraph() {
     runStates,
     submitExecution,
     trackPrompt,
+    restoreRunStates,
+    setRunScope,
     abortPrompt,
     onDblClick,
     importMedia,

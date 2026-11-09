@@ -38,6 +38,8 @@ export function useCanvas({
   exportCanvas,
   loadCanvas,
   resetCanvas,
+  setRunScope,
+  restoreRunStates,
 }) {
   const list = ref([]);
   const currentId = ref("");
@@ -59,6 +61,8 @@ export function useCanvas({
 
   async function applyCanvas(canvas) {
     applying = true;
+    // 运行态映射按画布隔离，必须在载入节点之前切换，恢复时才知道该用哪一份
+    setRunScope(canvas.id);
     loadCanvas(canvas);
     currentId.value = canvas.id;
     currentName.value = canvas.name || "";
@@ -68,6 +72,8 @@ export function useCanvas({
     // 等 watch 冲刷完再解除保护（loadCanvas 的赋值是同步的，watch 是微任务）
     await nextTick();
     applying = false;
+    // 节点已经就位，把刷新前还在跑的任务重新挂回去（内部会先跟 ComfyUI 核对）
+    restoreRunStates();
   }
 
   async function create(name) {
@@ -79,6 +85,8 @@ export function useCanvas({
     });
     applying = true;
     resetCanvas();
+    // 新画布节点 id 从 1 开始，切到新作用域，避免旧画布的任务映射套上来
+    setRunScope(canvas.id);
     currentId.value = canvas.id;
     currentName.value = canvas.name || fallback;
     rememberLast(canvas.id);
