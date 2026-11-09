@@ -32,6 +32,30 @@
         </svg>
         资产库
       </button>
+      <button
+        class="lib-tab"
+        :class="{ 'is-active': panel === 'log' }"
+        type="button"
+        @click="toggle('log')"
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path
+            d="M4 7h3M4 12h3M4 17h3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+          <path
+            d="M11 7h9M11 12h9M11 17h6"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          />
+        </svg>
+        日志
+      </button>
     </div>
 
     <!-- 右侧滑出面板 -->
@@ -121,7 +145,7 @@
         </template>
 
         <!-- 资产库 -->
-        <template v-else>
+        <template v-else-if="panel === 'asset'">
           <header class="lib-head">
             <span class="lib-title">资产库</span>
             <span class="lib-count" v-if="total">{{ assets.length }} / {{ total }}</span>
@@ -196,39 +220,137 @@
           </div>
 
           <footer class="lib-foot">拖到画布空白处新建节点，拖到节点上添加素材</footer>
-
-          <!-- 悬停素材时的快速预览气泡 -->
-          <Teleport to="body">
-            <div
-              v-if="previewCard"
-              class="preview-bubble"
-              :style="{
-                left: `${previewCard.x}px`,
-                top: `${previewCard.y}px`,
-                width: previewCard.ready ? `${previewCard.width}px` : 'auto',
-                height: previewCard.ready ? `${previewCard.height}px` : 'auto',
-                visibility: previewCard.ready ? 'visible' : 'hidden',
-              }"
-            >
-              <video
-                v-if="previewCard.file.category === 'video'"
-                :src="assetUrl(previewCard.file)"
-                autoplay
-                muted
-                loop
-                playsinline
-                @loadedmetadata="fitPreview"
-              />
-              <img
-                v-else-if="previewCard.file.category === 'photo'"
-                :src="thumbUrl(previewCard.file, 640)"
-                @load="fitPreview"
-              />
-              <div v-else class="preview-bubble-audio">音频</div>
-              <span class="preview-bubble-name">{{ previewCard.file.filename }}</span>
-            </div>
-          </Teleport>
         </template>
+
+        <!-- 任务队列日志 -->
+        <template v-else>
+          <header class="lib-head">
+            <span class="lib-title">任务队列</span>
+            <span class="lib-count" v-if="running.length || pending.length">
+              {{ running.length }} 运行 · {{ pending.length }} 排队
+            </span>
+            <span class="lib-count" v-else-if="history.length">{{ history.length }} 条</span>
+            <div class="lib-switch">
+              <button type="button" :disabled="historyLoading" @click="loadHistory">刷新</button>
+            </div>
+          </header>
+
+          <div class="lib-list history-list">
+            <!-- 队列里还没跑完的任务：正在运行 / 排队中 -->
+            <section v-if="running.length || pending.length" class="history-group">
+              <h4 class="history-day">进行中</h4>
+              <article
+                v-for="item in running"
+                :key="`run-${item.promptId}`"
+                class="history-item"
+              >
+                <div class="history-thumb is-spinning"><span>↻</span></div>
+                <div class="history-body">
+                  <p class="history-name">正在执行…</p>
+                  <p class="history-meta">运行中 · {{ shortId(item.promptId) }}</p>
+                </div>
+                <button
+                  class="history-stop"
+                  type="button"
+                  title="停止这个任务"
+                  :disabled="!!abortingId"
+                  @click="abortTask(item)"
+                >
+                  ×
+                </button>
+              </article>
+              <article
+                v-for="item in pending"
+                :key="`wait-${item.promptId}`"
+                class="history-item"
+              >
+                <div class="history-thumb"><span>{{ item.position }}</span></div>
+                <div class="history-body">
+                  <p class="history-name">排队中</p>
+                  <p class="history-meta">第 {{ item.position }} 位 · {{ shortId(item.promptId) }}</p>
+                </div>
+                <button
+                  class="history-stop"
+                  type="button"
+                  title="从队列移出"
+                  :disabled="!!abortingId"
+                  @click="abortTask(item)"
+                >
+                  ×
+                </button>
+              </article>
+            </section>
+
+            <section v-for="group in historyGroups" :key="group.label" class="history-group">
+              <h4 class="history-day">{{ group.label }}</h4>
+              <article
+                v-for="item in group.items"
+                :key="item.promptId"
+                class="history-item"
+                @mouseenter="openHistoryPreview($event, item)"
+                @mouseleave="closePreview"
+              >
+                <div class="history-thumb">
+                  <img
+                    v-if="historyThumb(item)"
+                    :src="historyThumb(item)"
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    @error="markHistoryThumbFailed(item)"
+                  />
+                  <span v-else>{{ historyExt(item) }}</span>
+                </div>
+                <div class="history-body">
+                  <p class="history-name">{{ historyTitle(item) }}</p>
+                  <p v-if="item.error" class="history-meta is-error">
+                    {{ historyMeta(item) }} · {{ item.error }}
+                  </p>
+                  <p v-else class="history-meta">{{ historyMeta(item) }}</p>
+                </div>
+              </article>
+            </section>
+            <p v-if="!history.length && !running.length && !pending.length" class="lib-empty">
+              {{ historyLoading ? "加载中…" : historyError || "还没有跑过的任务" }}
+            </p>
+          </div>
+
+          <footer class="lib-foot">
+            来自 ComfyUI 的队列历史，重启 ComfyUI 后会清空
+          </footer>
+        </template>
+
+        <!-- 悬停素材/任务时的快速预览气泡 -->
+        <Teleport to="body">
+          <div
+            v-if="previewCard"
+            class="preview-bubble"
+            :style="{
+              left: `${previewCard.x}px`,
+              top: `${previewCard.y}px`,
+              width: previewCard.ready ? `${previewCard.width}px` : 'auto',
+              height: previewCard.ready ? `${previewCard.height}px` : 'auto',
+              visibility: previewCard.ready ? 'visible' : 'hidden',
+            }"
+          >
+            <video
+              v-if="previewCard.file.category === 'video'"
+              :src="assetUrl(previewCard.file)"
+              autoplay
+              muted
+              loop
+              playsinline
+              @loadedmetadata="fitPreview"
+            />
+            <img
+              v-else-if="previewCard.file.category === 'photo'"
+              :src="thumbUrl(previewCard.file, 640)"
+              @load="fitPreview"
+            />
+            <div v-else class="preview-bubble-audio">音频</div>
+            <span class="preview-bubble-name">{{ previewCard.file.filename }}</span>
+          </div>
+        </Teleport>
       </section>
     </Transition>
   </div>
@@ -260,7 +382,11 @@ async function onPromptClick(item) {
   }, 1600);
 }
 
-onBeforeUnmount(() => clearTimeout(copyTimer));
+onBeforeUnmount(() => {
+  clearTimeout(copyTimer);
+  stopHistoryTimer();
+  closeHistorySocket();
+});
 
 const prompts = ref([]);
 const draftName = ref("");
@@ -290,10 +416,248 @@ const exhausted = ref(false);
 const gridEl = ref(null);
 const hasMore = computed(() => !exhausted.value && assets.value.length < total.value);
 
+// ---------------------------------------------------------------- 任务队列日志
+// 后端转发 ComfyUI 的 /history（只读、不落盘），重启 ComfyUI 后自然清空
+const history = ref([]);
+// 队列里还没跑完的任务（/queue 的 queue_running / queue_pending）
+const running = ref([]);
+const pending = ref([]);
+const historyLoading = ref(false);
+const historyError = ref("");
+let historyTimer = 0;
+let historySocket = null;
+let historyRefreshTimer = 0;
+// 正在请求时又收到刷新请求，等这次结束后立刻再拉一次，避免错过刚跑完的任务
+let historyPending = false;
+
+async function loadHistory() {
+  if (historyLoading.value) {
+    historyPending = true;
+    return;
+  }
+  historyLoading.value = true;
+  try {
+    const response = await fetch("/infinite_canvas/api/queue/history?limit=60");
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || "读取队列历史失败");
+    history.value = data.items || [];
+    running.value = data.running || [];
+    pending.value = data.pending || [];
+    historyError.value = "";
+  } catch (error) {
+    historyError.value = error?.message || "读取队列历史失败";
+  } finally {
+    historyLoading.value = false;
+    if (historyPending) {
+      historyPending = false;
+      loadHistory();
+    }
+  }
+}
+
+// prompt id 是 uuid，列表里只露前 8 位做区分
+function shortId(promptId) {
+  return String(promptId || "").slice(0, 8);
+}
+
+// 停止正在运行的任务 / 把排队中的任务移出队列，后端会区分这两种情况
+const abortingId = ref("");
+
+async function abortTask(item) {
+  if (abortingId.value) return;
+  abortingId.value = item.promptId;
+  try {
+    const response = await fetch("/infinite_canvas/api/queue/abort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt_id: item.promptId }),
+    });
+    if (response.ok) {
+      // 通知画布把对应节点的运行/排队状态复位，两边状态保持一致
+      window.dispatchEvent(
+        new CustomEvent("infinite-canvas:queue-abort", {
+          detail: { promptId: item.promptId },
+        })
+      );
+    }
+    await loadHistory();
+  } catch {
+    // 取消失败就交给下一轮轮询刷新
+  } finally {
+    abortingId.value = "";
+  }
+}
+
+function stopHistoryTimer() {
+  clearInterval(historyTimer);
+  historyTimer = 0;
+}
+
+// ComfyUI 的 /ws 会广播执行事件，面板开着时靠它立刻刷新，轮询只做兜底
+const HISTORY_EVENTS = new Set([
+  "status",
+  "execution_start",
+  "execution_cached",
+  "execution_success",
+  "execution_error",
+  "execution_interrupted",
+]);
+
+function refreshFromEvent() {
+  clearTimeout(historyRefreshTimer);
+  historyRefreshTimer = setTimeout(loadHistory, 300);
+}
+
+function connectHistorySocket() {
+  if (historySocket && historySocket.readyState <= WebSocket.OPEN) return;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  // 独立的 clientId：进度类消息只推给提交任务的客户端，这里只要广播事件
+  const clientId = `ic_log_${Date.now().toString(36)}`;
+  const socket = new WebSocket(`${scheme}://${location.host}/ws?clientId=${clientId}`);
+  historySocket = socket;
+  socket.onmessage = (event) => {
+    let message = null;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (HISTORY_EVENTS.has(message?.type)) refreshFromEvent();
+  };
+  socket.onerror = () => {
+    // 连不上就退回轮询
+    if (historySocket === socket) historySocket = null;
+  };
+  socket.onclose = () => {
+    if (historySocket === socket) historySocket = null;
+    // 面板还开着就隔几秒重连，期间靠轮询兜底
+    if (panel.value === "log") {
+      historyRefreshTimer = setTimeout(() => {
+        if (panel.value === "log") connectHistorySocket();
+      }, 3000);
+    }
+  };
+}
+
+function closeHistorySocket() {
+  clearTimeout(historyRefreshTimer);
+  historyRefreshTimer = 0;
+  if (!historySocket) return;
+  // 主动关闭不触发重连
+  historySocket.onclose = null;
+  historySocket.close();
+  historySocket = null;
+}
+
+// 按完成日期分组（今天 / 昨天 / X 月 X 日），后端已按时间倒序
+const historyGroups = computed(() => {
+  const groups = [];
+  for (const item of history.value) {
+    const label = dayLabel(item.finishedAt);
+    let group = groups[groups.length - 1];
+    if (!group || group.label !== label) {
+      group = { label, items: [] };
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  return groups;
+});
+
+function dayLabel(stamp) {
+  if (!stamp) return "未知时间";
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (stamp >= todayStart) return "今天";
+  if (stamp >= todayStart - 86400000) return "昨天";
+  const date = new Date(stamp);
+  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+}
+
+function historyTitle(item) {
+  return item.files[0]?.filename || (item.status === "error" ? "执行失败" : "无产物");
+}
+
+function historyExt(item) {
+  const name = item.files[0]?.filename || "";
+  const ext = name.split(".").pop();
+  return ext && ext !== name ? ext.toUpperCase().slice(0, 4) : "—";
+}
+
+// 任务产物转成预览气泡要的素材结构：缩略图接口只认 input / output
+function historyPreviewFile(item) {
+  const file = item.files?.[0];
+  if (!file) return null;
+  if (file.type !== "output" && file.type !== "input") return null;
+  const name = file.filename || "";
+  let category = "other";
+  if (/\.(png|jpe?g|webp|gif|bmp|tiff)$/i.test(name)) category = "photo";
+  else if (/\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(name)) category = "video";
+  else if (/\.(mp3|wav|flac|ogg|m4a|aac)$/i.test(name)) category = "audio";
+  if (category === "other") return null;
+  return { ...file, category };
+}
+
+function openHistoryPreview(event, item) {
+  const file = historyPreviewFile(item);
+  if (file) openPreview(event, file);
+}
+
+function statusText(item) {
+  if (item.status === "interrupted") return "已中断";
+  if (item.status === "error") return "失败";
+  if (item.status === "success") return "完成";
+  return "未知";
+}
+
+// 文件名下面那行：状态 · 耗时 · 产物数量
+function historyMeta(item) {
+  const parts = [statusText(item)];
+  if (item.duration != null) parts.push(`${item.duration.toFixed(2)}s`);
+  if (item.files.length > 1) parts.push(`${item.files.length} 个产物`);
+  return parts.join(" · ");
+}
+
+// 缩略图走资产库同一个接口，只支持 input / output；temp 里的预览图给扩展名占位
+function historyThumb(item) {
+  const file = item.files?.[0];
+  if (!file) return "";
+  if (file.type !== "output" && file.type !== "input") return "";
+  if (!/\.(png|jpe?g|webp|gif|bmp|tiff|mp4|webm|mov|mkv|avi|m4v)$/i.test(file.filename)) {
+    return "";
+  }
+  if (thumbFailed.value[`${file.type}/${file.subfolder}/${file.filename}`]) return "";
+  const params = new URLSearchParams({
+    filename: file.filename,
+    subfolder: file.subfolder || "",
+    type: file.type,
+    size: "320",
+  });
+  return `/infinite_canvas/api/library/thumb?${params.toString()}`;
+}
+
+function markHistoryThumbFailed(item) {
+  const file = item.files?.[0];
+  if (!file) return;
+  thumbFailed.value = {
+    ...thumbFailed.value,
+    [`${file.type}/${file.subfolder}/${file.filename}`]: true,
+  };
+}
+
 watch(panel, (value) => {
+  stopHistoryTimer();
+  closeHistorySocket();
   if (value === "prompt") loadPrompts();
   if (value === "asset") loadAssets();
   else closePreview();
+  // 日志面板开着时定时刷新，刚跑完的任务会自动出现
+  if (value === "log") {
+    loadHistory();
+    connectHistorySocket();
+    // WebSocket 负责"一有事件就立刻刷"，5 秒轮询只做断线/丢事件的兜底
+    historyTimer = setInterval(loadHistory, 5000);
+  }
 });
 
 watch(kind, () => {
@@ -1055,5 +1419,130 @@ function placePreview(width, height, ready) {
   text-overflow: ellipsis;
   white-space: nowrap;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
+}
+
+/* 任务队列日志 */
+.history-list {
+  gap: 0;
+}
+
+.history-group:first-child .history-day {
+  margin-top: 2px;
+}
+
+.history-day {
+  margin: 10px 0 4px;
+  color: var(--c-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 6px;
+  border-radius: 9px;
+}
+
+.history-item:hover {
+  background: var(--c-surface-3);
+}
+
+.history-thumb {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+/* 运行中的任务用旋转箭头代替缩略图 */
+.history-thumb.is-spinning span {
+  animation: history-spin 1.1s linear infinite;
+  font-size: 15px;
+}
+
+@keyframes history-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.history-thumb img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+/* 文件名在上、状态/耗时在下，上下贴住整行的 40px 高度 */
+.history-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 2px;
+}
+
+.history-name {
+  margin: 0;
+  overflow: hidden;
+  color: var(--c-text);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.history-meta {
+  margin: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--c-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.history-meta.is-error {
+  color: var(--c-danger);
+}
+
+/* 停止运行中 / 移除排队中的任务 */
+.history-stop {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0 0 1px;
+  border: 1px solid var(--c-line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.history-stop:hover:not(:disabled) {
+  border-color: var(--c-danger);
+  color: var(--c-danger);
+}
+
+.history-stop:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 </style>

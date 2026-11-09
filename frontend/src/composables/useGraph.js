@@ -1766,11 +1766,22 @@ export function useGraph() {
     }
   }
 
+  // 日志面板里中断运行中 / 移除排队中的任务后，画布上对应节点的状态要一起复位，
+  // 两边是不同的组件，用事件把 prompt id 传过来
+  function onQueueAbort(event) {
+    const promptId = event.detail?.promptId;
+    if (!promptId) return;
+    const nodeId = promptNodes.get(promptId);
+    if (nodeId) clearRunState(nodeId);
+  }
+  window.addEventListener("infinite-canvas:queue-abort", onQueueAbort);
+
   onScopeDispose(() => {
     window.removeEventListener("keydown", onCopyPasteKey);
     window.removeEventListener("keydown", onDeleteKey);
     window.removeEventListener("mousemove", trackConnectPointer);
     window.removeEventListener("touchmove", trackConnectPointer);
+    window.removeEventListener("infinite-canvas:queue-abort", onQueueAbort);
     offConnect();
     offConnectStart();
     offConnectEnd();

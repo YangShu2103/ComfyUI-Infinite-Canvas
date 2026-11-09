@@ -1067,6 +1067,85 @@ async def _queue_state(session, origin, prompt_id):
     return None
 
 
+def _history_files(outputs):
+    """把 /history 的 outputs 摊平成素材列表
+
+    outputs 是按节点分组的：{ 节点id: { images: [{filename, subfolder, type}], ... } }，
+    同一个文件被多个节点输出时只保留一条。
+    """
+    files = []
+    seen = set()
+    for value in (outputs or {}).values():
+        if not isinstance(value, dict):
+            continue
+        for items in value.values():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict) or not item.get("filename"):
+                    continue
+                ref = {
+                    "filename": str(item["filename"]),
+                    "subfolder": str(item.get("subfolder") or ""),
+                    "type": str(item.get("type") or "output"),
+                }
+                token = (ref["type"], ref["subfolder"], ref["filename"])
+                if token in seen:
+                    continue
+                seen.add(token)
+                files.append(ref)
+    return files
+
+
+def _history_times(status):
+    """从 status.messages 里取开始/结束时间（毫秒时间戳），拿不到就返回 None"""
+    started = None
+    finished = None
+    for item in (status or {}).get("messages") or []:
+        if not isinstance(item, list) or len(item) < 2 or not isinstance(item[1], dict):
+            continue
+        stamp = item[1].get("timestamp")
+        if not isinstance(stamp, (int, float)):
+            continue
+        if item[0] == "execution_start" and started is None:
+            started = stamp
+        elif item[0] in ("execution_success", "execution_error", "execution_interrupted"):
+            finished = stamp
+    return started, finished
+
+
+def _history_item(prompt_id, entry):
+    """把 /history 的一条记录整理成任务队列面板需要的样子"""
+    status = entry.get("status") or {}
+    started, finished = _history_times(status)
+    state = status.get("status_str") or ("success" if status.get("completed") else "unknown")
+    error = ""
+    interrupted = False
+    for item in status.get("messages") or []:
+        if not isinstance(item, list) or not item:
+            continue
+        if item[0] == "execution_interrupted":
+            interrupted = True
+        elif item[0] == "execution_error" and not error:
+            detail = item[1] if len(item) > 1 and isinstance(item[1], dict) else {}
+            error = str(detail.get("exception_message") or "执行失败")
+    # 手动停止的任务 status_str 也是 error，单独标出来，面板上别显示成执行失败
+    if interrupted:
+        state = "interrupted"
+    duration = None
+    if started and finished and finished >= started:
+        duration = round((finished - started) / 1000, 2)
+    return {
+        "promptId": prompt_id,
+        "status": state,
+        "startedAt": started,
+        "finishedAt": finished or started,
+        "duration": duration,
+        "error": error,
+        "files": _history_files(entry.get("outputs")),
+    }
+
+
 _VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".avi")
 _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
 
@@ -1692,6 +1771,53 @@ def register_routes(app):
         # 已经结束（或不在队列里）：前端按本地状态清理即可
         return web.json_response({"action": "finished"})
 
+    async def queue_history(request):
+        """ComfyUI 的任务队列：正在运行 / 排队中的任务 + 最近跑完的历史
+
+        直接转发 ComfyUI 的 /queue 与 /history，不做本地落盘：重启 ComfyUI 后清空，
+        与 ComfyUI 自带的任务队列面板保持一致。
+        """
+        try:
+            limit = int(request.query.get("limit", 60))
+        except (TypeError, ValueError):
+            limit = 60
+        limit = max(1, min(limit, 200))
+
+        origin = _comfy_base(request)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{origin}/queue") as response:
+                    queue = await response.json(content_type=None)
+                async with session.get(
+                    f"{origin}/history", params={"max_items": str(limit)}
+                ) as response:
+                    data = await response.json(content_type=None)
+        except aiohttp.ClientError as exc:
+            return web.json_response({"error": f"连接 ComfyUI 失败: {exc}"}, status=502)
+
+        queue = queue if isinstance(queue, dict) else {}
+        running = [
+            {"promptId": _queue_prompt_id(item), "status": "running"}
+            for item in queue.get("queue_running") or []
+            if _queue_prompt_id(item)
+        ]
+        pending = [
+            {"promptId": _queue_prompt_id(item), "status": "pending", "position": index + 1}
+            for index, item in enumerate(queue.get("queue_pending") or [])
+            if _queue_prompt_id(item)
+        ]
+
+        raw = data if isinstance(data, dict) else {}
+        items = [
+            _history_item(str(prompt_id), entry)
+            for prompt_id, entry in raw.items()
+            if isinstance(entry, dict)
+        ]
+        items.sort(key=lambda item: item.get("finishedAt") or 0, reverse=True)
+        return web.json_response(
+            {"running": running, "pending": pending, "items": items[:limit]}
+        )
+
     async def free_memory(request):
         """卸载已加载的模型并清空显存 / 内存缓存（转发 ComfyUI 自身的 POST /free）
 
@@ -1747,6 +1873,7 @@ def register_routes(app):
             web.post(f"{API_PREFIX}/execute", execute_workflow),
             web.get(f"{API_PREFIX}/prompts/{{prompt_id}}", prompt_result),
             web.post(f"{API_PREFIX}/queue/abort", abort_prompt),
+            web.get(f"{API_PREFIX}/queue/history", queue_history),
             web.post(f"{API_PREFIX}/free", free_memory),
         ]
     )

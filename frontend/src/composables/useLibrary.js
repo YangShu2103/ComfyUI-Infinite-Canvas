@@ -1,8 +1,8 @@
 import { ref } from "vue";
 
-// 右上角「提示词 / 资产库」面板与节点提示词框之间共享的状态
+// 右上角「提示词 / 资产库 / 日志」面板与节点提示词框之间共享的状态
 // 模块级单例：App 挂面板，Node 只需要登记自己能接收提示词
-const panel = ref(null); // "prompt" | "asset" | null
+const panel = ref(null); // "prompt" | "asset" | "log" | null
 // 面板打开（选中）的节点各自的写入通道：nodeId -> { insert(text, useCaret), isActive() }
 const targets = new Map();
 // 给面板底部提示用：当前有多少个节点可以接收提示词
