@@ -65,6 +65,15 @@
       <CanvasMenu />
     </div>
 
+    <!-- 右键画布空白处：在鼠标位置弹出的节点菜单 -->
+    <CanvasContextMenu
+      :open="contextMenu.open"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      @pick="onContextPick"
+      @close="closeContextMenu"
+    />
+
     <component v-for="dialog in dialogs" :is="dialog.component" :key="dialog.key" />
   </div>
 </template>
@@ -74,7 +83,9 @@ import { computed, markRaw, onBeforeUnmount, onMounted, provide, ref } from "vue
 import { VueFlow, getBezierPath } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
+import PreprocessNode from "./components/Node/PreprocessNode.vue";
 import CanvasEdge from "./components/Edge/index.vue";
+import CanvasContextMenu from "./components/CanvasContextMenu.vue";
 import TabBar from "./components/TabBar/index.vue";
 import CanvasMenu from "./components/CanvasMenu.vue";
 import LibraryDock from "./components/LibraryDock.vue";
@@ -109,7 +120,7 @@ function connectLinePath(line) {
 // 节点一多就是纯 GPU 负担，直接关掉
 const isFarZoom = computed(() => (Number(viewport.value?.zoom) || 1) < 0.45);
 
-const nodeTypes = { demo: markRaw(DemoNode) };
+const nodeTypes = { demo: markRaw(DemoNode), preprocess: markRaw(PreprocessNode) };
 const edgeTypes = { canvas: markRaw(CanvasEdge) };
 
 // 画布初始缩放：改 zoom 即可（1 = 100%）
@@ -132,7 +143,14 @@ const {
   importMedia,
   appendMedia,
   appendItems,
+  appendFilesToShot,
   spawnChildNode,
+  spawnPreprocessNode,
+  runPreprocess,
+  cancelPreprocess,
+  createShot,
+  preprocessStates,
+  canvasPoint,
   duplicateNode,
   spawnMediaNodeAt,
   spawnItemsNodeAt,
@@ -412,9 +430,49 @@ function onCutKeyDown(event) {
   resetCut();
 }
 
+// 右键画布空白处：在鼠标位置弹出节点菜单。落在节点 / 面板 / 输入框上的右键保持原样
+const contextMenu = ref({ open: false, x: 0, y: 0, point: { x: 0, y: 0 } });
+const CONTEXT_MENU_WIDTH = 176;
+const CONTEXT_MENU_HEIGHT = 92;
+
 // macOS 上 Ctrl + 左键会被当成右键，划线时要把右键菜单压掉
 function onContextMenu(event) {
-  if (event.ctrlKey || event.altKey) event.preventDefault();
+  if (event.ctrlKey || event.altKey) {
+    event.preventDefault();
+    return;
+  }
+  const target = event.target;
+  if (
+    target instanceof Element &&
+    target.closest(
+      ".vue-flow__node, .vue-flow__handle, .vue-flow__edge, .node-panel, .library-dock, .canvas-tabbar, .canvas-menu, input, textarea, select, [contenteditable='true']"
+    )
+  ) {
+    return;
+  }
+  event.preventDefault();
+  // 菜单不能超出窗口，靠近边缘时往回收
+  contextMenu.value = {
+    open: true,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT)),
+    point: canvasPoint(event.clientX, event.clientY),
+  };
+}
+
+function closeContextMenu() {
+  if (!contextMenu.value.open) return;
+  contextMenu.value = { ...contextMenu.value, open: false };
+}
+
+function onContextPick(key) {
+  const point = contextMenu.value.point;
+  closeContextMenu();
+  if (key === "preprocess") {
+    spawnPreprocessNode(point);
+    return;
+  }
+  // 提示词节点先占位，后续接入
 }
 
 // Vue Flow 的画布平移走的是 d3-zoom 的 mousedown，pointerdown 拦不住它
@@ -438,8 +496,10 @@ onBeforeUnmount(() => {
 
 // 节点组件需要往画布上派生节点 / 追加素材，通过 provide 复用同一份图数据
 provide("canvasGraph", {
+  nodes,
   appendMedia,
   appendItems,
+  appendFilesToShot,
   spawnChildNode,
   duplicateNode,
   itemsFromRefs,
@@ -459,6 +519,10 @@ provide("canvasGraph", {
   visibleNodeIds,
   viewport,
   runStates,
+  preprocessStates,
+  runPreprocess,
+  cancelPreprocess,
+  createShot,
   submitExecution,
   trackPrompt,
   abortPrompt,
@@ -483,6 +547,13 @@ onMounted(() => canvasStore.bootstrap());
 
 // 从系统里拖动文件进画布
 const dragging = ref(false);
+// 节点内部会拦下部分 drop（如分镜素材区），事件不再冒泡到画布，
+// 在捕获阶段兜底复位拖拽提示，避免整块虚框一直挂着
+function resetDragging() {
+  dragging.value = false;
+}
+window.addEventListener("drop", resetDragging, true);
+window.addEventListener("dragend", resetDragging, true);
 // 从节点媒体条里拖出来的素材用这个私有类型，避免和系统文件混淆
 const ASSET_DRAG_TYPE = "application/x-infinite-canvas-asset";
 
@@ -596,6 +667,7 @@ async function onDrop(event) {
 
 /* 缩小到 45% 以下：关掉节点和素材卡片的阴影与层提升，减少合成开销 */
 .flow-wrap.is-far :deep(.demo-node),
+.flow-wrap.is-far :deep(.pp-node),
 .flow-wrap.is-far :deep(.media-stack-card) {
   box-shadow: none;
 }

@@ -195,6 +195,24 @@ export function useCanvas({
   const mediaFingerprint = (list) =>
     (list || []).map((item) => `${item.id}/${item.ref?.filename || ""}`).join(",");
 
+  // 预处理节点：暂存池 + 分镜（素材 / 提示词 / 工作流 / 参数 / 等待开关 / 下游节点 id）
+  const preprocessFingerprint = (data) => {
+    if (!data?.shots && !data?.pool) return "";
+    return JSON.stringify([
+      mediaFingerprint(data.pool),
+      (data.shots || []).map((shot) => [
+        shot.id,
+        shot.prompt,
+        shot.workflow,
+        toRaw(shot.params),
+        toRaw(shot.randomFields),
+        shot.wait,
+        shot.nodeId,
+        mediaFingerprint(shot.media),
+      ]),
+    ]);
+  };
+
   // 注意：这里列出的字段要和 exportCanvas 保存的内容保持一致，
   // 以后往 node.data 里加需要持久化的字段时别忘了加进来，否则改动不会触发自动保存
   const saveSignature = computed(() => {
@@ -218,6 +236,7 @@ export function useCanvas({
           toRaw(data?.randomFields),
           mediaFingerprint(data?.media),
           mediaFingerprint(data?.inputMedia),
+          preprocessFingerprint(data),
         ];
       }),
       edges.value.map((edge) => [edge.id, edge.source, edge.target]),

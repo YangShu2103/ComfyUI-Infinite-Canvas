@@ -18,6 +18,9 @@ const FIT_TOLERANCE_MIN = 3;
 // 自适应尺寸要按卡片实际显示区域算，否则图片会被居中裁切
 const CARD_WIDTH_RATIO = 0.84;
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 0.7 };
+// 预处理节点默认尺寸：总素材区 + 约 2.2 个任务可见
+const PREPROCESS_WIDTH = 620;
+const PREPROCESS_HEIGHT = 880;
 
 // ComfyUI 的 /view 地址：素材存在 input 目录，产物存在 output 目录，前端只存引用
 function mediaUrl(ref) {
@@ -226,6 +229,36 @@ export function useGraph() {
     };
   }
 
+  // 预处理节点：分镜各自保存素材、提示词、工作流与参数；
+  // nodeId 指向该分镜派生出的下游节点，第二次运行复用同一个节点
+  function createShot() {
+    return {
+      id: newId(),
+      media: [],
+      prompt: "",
+      workflow: defaultWorkflow(),
+      params: {},
+      randomFields: {},
+      // 等待开关：打开时等上一个分镜跑完再提交（第 1 个分镜没有这个开关）
+      wait: false,
+      // 已完成的任务自动上锁，下次运行默认跳过；改动提示词 / 参数 / 素材会自动解锁
+      locked: false,
+      nodeId: "",
+    };
+  }
+
+  function preprocessData() {
+    return {
+      label: "预处理",
+      // 总素材区是暂存池：上游 / 拖入的素材先落在这里，再手动拖进分镜
+      pool: [],
+      inputMedia: [],
+      shots: [createShot()],
+      w: PREPROCESS_WIDTH,
+      h: PREPROCESS_HEIGHT,
+    };
+  }
+
   function addNode(position) {
     captureUndo();
     nodeSeq += 1;
@@ -248,6 +281,33 @@ export function useGraph() {
       },
     ]);
     // 新建后立即选中并展开参数面板，不用再点一下
+    nextTick(() => {
+      const created = flow.getNodes.value.find((node) => node.id === id);
+      if (created) flow.addSelectedNodes([created]);
+    });
+    return id;
+  }
+
+  // 右键菜单「预处理」：在鼠标位置创建预处理节点
+  function spawnPreprocessNode(position) {
+    captureUndo(true);
+    nodeSeq += 1;
+    const id = String(nodeSeq);
+    for (const node of flow.getNodes.value) {
+      if (node.selected) node.selected = false;
+    }
+    flow.addNodes([
+      {
+        id,
+        type: "preprocess",
+        selected: true,
+        position: {
+          x: Math.round(position.x - PREPROCESS_WIDTH / 2),
+          y: Math.round(position.y - 40),
+        },
+        data: preprocessData(),
+      },
+    ]);
     nextTick(() => {
       const created = flow.getNodes.value.find((node) => node.id === id);
       if (created) flow.addSelectedNodes([created]);
@@ -358,7 +418,13 @@ export function useGraph() {
   // 否则下游节点的副本会一直停在"上传中"（失败时也一样收不到错误）
   function syncItemCopies(item) {
     for (const node of nodes.value) {
-      const all = [...(node.data.media || []), ...(node.data.inputMedia || [])];
+      const all = [
+        ...(node.data.media || []),
+        ...(node.data.inputMedia || []),
+        // 预处理节点：暂存池和分镜素材里可能各有一份同 id 的副本
+        ...(node.data.pool || []),
+        ...((node.data.shots || []).flatMap((shot) => shot.media || [])),
+      ];
       for (const media of all) {
         if (media === item || !media || media.id !== item.id) continue;
         // 副本用的本地预览地址已经用不上了，换掉后回收
@@ -541,13 +607,31 @@ export function useGraph() {
     return id;
   }
 
+  // 同名素材只保留一份：后加入的重复文件直接忽略
+  function uniqueByName(existing, items) {
+    const names = new Set((existing || []).map((item) => item.name));
+    return (items || []).filter((item) => {
+      if (!item || names.has(item.name)) return false;
+      names.add(item.name);
+      return true;
+    });
+  }
+
   // 往已有节点上继续追加素材（同样先放本地占位，后台补传）
   function appendMedia(nodeId, files) {
-    const items = filesToPlaceholders(files);
-    if (!items.length) return false;
-
     const node = nodes.value.find((item) => item.id === nodeId);
     if (!node) return false;
+    // 预处理节点：素材先落到总素材区，由用户手动拖进分镜
+    if (node.type === "preprocess") {
+      const items = uniqueByName(node.data.pool, filesToPlaceholders(files));
+      if (!items.length) return false;
+      captureUndo();
+      node.data.pool = [...(node.data.pool || []), ...items];
+      items.forEach((item) => runUpload(item).catch(() => {}));
+      return true;
+    }
+    const items = filesToPlaceholders(files);
+    if (!items.length) return false;
     captureUndo();
     const media = node.data.media || [];
     const wasEmpty = !media.length;
@@ -565,12 +649,39 @@ export function useGraph() {
 
     const node = nodes.value.find((item) => item.id === nodeId);
     if (!node) return false;
+    if (node.type === "preprocess") {
+      const added = uniqueByName(node.data.pool, items);
+      if (!added.length) return false;
+      node.data.pool = [...(node.data.pool || []), ...added];
+      return true;
+    }
     const media = node.data.media || [];
     const wasEmpty = !media.length;
     node.data.media = [...media, ...items];
     if (wasEmpty) node.data.index = 0;
     // 空节点落首个产物时按它的比例定尺寸；已有素材时保持原有比例不变
     if (wasEmpty) fitNodeToFirstImage(nodeId, items);
+    return true;
+  }
+
+  // 把系统文件直接拖进预处理节点的某个分镜：先放本地占位卡片，再后台上传；
+  // 同名文件不重复加，同时往暂存池补一份，方便复用
+  function appendFilesToShot(preprocessId, shotId, files) {
+    const node = nodes.value.find((item) => item.id === preprocessId);
+    if (!node || node.type !== "preprocess") return false;
+    const shot = (node.data.shots || []).find((item) => item.id === shotId);
+    if (!shot) return false;
+    const items = uniqueByName(shot.media, filesToPlaceholders(files));
+    if (!items.length) return false;
+    const poolAdds = uniqueByName(node.data.pool, items);
+    captureUndo();
+    node.data.pool = [...(node.data.pool || []), ...poolAdds];
+    node.data.shots = (node.data.shots || []).map((entry) =>
+      entry.id === shotId
+        ? { ...entry, media: [...(entry.media || []), ...items], locked: false }
+        : entry
+    );
+    items.forEach((item) => runUpload(item).catch(() => {}));
     return true;
   }
 
@@ -828,6 +939,8 @@ export function useGraph() {
         target: edge.target,
         sourceHandle: edge.sourceHandle || null,
         targetHandle: edge.targetHandle || null,
+        // 等待开关生成的依赖连线要保留标记，撤销/保存后才能继续识别
+        ...(edge.data?.wait ? { data: { wait: true } } : {}),
       })),
     };
   }
@@ -845,16 +958,27 @@ export function useGraph() {
 
   function restoreGraph(snapshot) {
     restoring = true;
-    const restoredNodes = snapshot.nodes.map((node) => ({
-      id: node.id,
-      type: node.type || "demo",
-      position: { ...node.position },
-      data: {
-        ...JSON.parse(JSON.stringify(node.data)),
-        media: (node.data.media || []).map(hydrateMediaItem),
-        inputMedia: (node.data.inputMedia || []).map(hydrateMediaItem),
-      },
-    }));
+    const restoredNodes = snapshot.nodes.map((node) => {
+      const data = JSON.parse(JSON.stringify(node.data));
+      const typed = node.type === "preprocess" ? {
+        pool: (data.pool || []).map(hydrateMediaItem),
+        shots: (data.shots || []).map((shot) => ({
+          ...shot,
+          media: (shot.media || []).map(hydrateMediaItem),
+        })),
+      } : {};
+      return {
+        id: node.id,
+        type: node.type || "demo",
+        position: { ...node.position },
+        data: {
+          ...data,
+          media: (node.data.media || []).map(hydrateMediaItem),
+          inputMedia: (node.data.inputMedia || []).map(hydrateMediaItem),
+          ...typed,
+        },
+      };
+    });
 
     nodes.value = restoredNodes;
     edges.value = snapshot.edges.map((edge) => ({ ...edge }));
@@ -913,6 +1037,20 @@ export function useGraph() {
             inputMedia: (data.inputMedia || [])
               .filter((mediaItem) => mediaItem && mediaItem.ref && mediaItem.ref.filename)
               .map(stripMediaItem),
+            // 预处理节点的总素材区 / 分镜素材同样只存引用
+            ...(node.type === "preprocess"
+              ? {
+                  pool: (data.pool || [])
+                    .filter((mediaItem) => mediaItem && mediaItem.ref && mediaItem.ref.filename)
+                    .map(stripMediaItem),
+                  shots: (data.shots || []).map((shot) => ({
+                    ...shot,
+                    media: (shot.media || [])
+                      .filter((mediaItem) => mediaItem && mediaItem.ref && mediaItem.ref.filename)
+                      .map(stripMediaItem),
+                  })),
+                }
+              : {}),
           },
         };
       }),
@@ -923,6 +1061,7 @@ export function useGraph() {
         target: edge.target,
         sourceHandle: edge.sourceHandle || null,
         targetHandle: edge.targetHandle || null,
+        ...(edge.data?.wait ? { data: { wait: true } } : {}),
       })),
       seq: { node: nodeSeq, edge: edgeSeq },
       viewport: {
@@ -951,6 +1090,15 @@ export function useGraph() {
           ...data,
           media: (data.media || []).map(hydrateMediaItem),
           inputMedia: (data.inputMedia || []).map(hydrateMediaItem),
+          ...(node.type === "preprocess"
+            ? {
+                pool: (data.pool || []).map(hydrateMediaItem),
+                shots: (data.shots || []).map((shot) => ({
+                  ...shot,
+                  media: (shot.media || []).map(hydrateMediaItem),
+                })),
+              }
+            : {}),
         },
       };
     });
@@ -961,6 +1109,7 @@ export function useGraph() {
       target: edge.target,
       sourceHandle: edge.sourceHandle || null,
       targetHandle: edge.targetHandle || null,
+      ...(edge.data?.wait ? { data: { wait: true } } : {}),
     }));
 
     nodes.value = loadedNodes;
@@ -1243,8 +1392,35 @@ export function useGraph() {
           }
           return clean;
         });
+        // 预处理节点：副本要带自己的暂存池和分镜，分镜的下游节点重新派发
+        if (source.type === "preprocess") {
+          const copyMedia = (list) =>
+            (list || []).map((item) => {
+              const clean = stripMediaItem(item);
+              if (item.pending || !item.ref) {
+                clean.id = item.id;
+                clean.url = item.url;
+              } else {
+                clean.id = newId();
+              }
+              return clean;
+            });
+          data.pool = copyMedia(data.pool);
+          data.shots = (data.shots || []).map((shot) => ({
+            ...shot,
+            id: newId(),
+            nodeId: "",
+            media: copyMedia(shot.media),
+          }));
+        } else {
+          // 分镜派生出来的普通节点被复制后，不能再当成某个分镜的节点
+          delete data.fromPreprocess;
+          delete data.preprocessId;
+          data.shotId = "";
+        }
         return {
           from: source.id,
+          type: source.type || "demo",
           position: {
             x: Math.round(source.position?.x || 0),
             y: Math.round(source.position?.y || 0),
@@ -1297,16 +1473,26 @@ export function useGraph() {
       nodeSeq += 1;
       const id = String(nodeSeq);
       idMap.set(entry.from, id);
+      const data = JSON.parse(JSON.stringify(entry.data));
       created.push({
         id,
-        type: "demo",
+        type: entry.type || "demo",
         selected: true,
         position: { x: entry.position.x, y: entry.position.y + offsetY },
         data: {
           ...baseData(`${nodeSeq}`),
-          ...JSON.parse(JSON.stringify(entry.data)),
+          ...data,
           media: (entry.data.media || []).map(hydrateMediaItem),
           inputMedia: [],
+          ...(entry.type === "preprocess"
+            ? {
+                pool: (data.pool || []).map(hydrateMediaItem),
+                shots: (data.shots || []).map((shot) => ({
+                  ...shot,
+                  media: (shot.media || []).map(hydrateMediaItem),
+                })),
+              }
+            : {}),
         },
       });
     }
@@ -1341,7 +1527,76 @@ export function useGraph() {
     return created.length;
   }
 
-  // 输入框里按 Ctrl+C/V 是正常复制文本，不拦截
+  // ------------------------------------------------------------ Shift + G 打包
+  // 把框选的节点合并成一个只收集素材的节点：新节点落位在选区中心，
+  // 素材按画布位置从上到下、从左到右排列，同名去重；原节点连同上下游连线一起删除
+  function packSelection() {
+    const selected = (flow.getSelectedNodes?.value || []).filter(Boolean);
+    if (selected.length < 2) return "";
+
+    captureUndo(true);
+
+    const ordered = [...selected].sort((a, b) => {
+      const ay = Number(a.position?.y) || 0;
+      const by = Number(b.position?.y) || 0;
+      if (ay !== by) return ay - by;
+      return (Number(a.position?.x) || 0) - (Number(b.position?.x) || 0);
+    });
+
+    const media = [];
+    const seen = new Set();
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of ordered) {
+      const x = Number(node.position?.x) || 0;
+      const y = Number(node.position?.y) || 0;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + (Number(node.data?.w) || NODE_WIDTH));
+      maxY = Math.max(maxY, y + (Number(node.data?.h) || NODE_HEIGHT));
+      for (const item of node.data?.media || []) {
+        const key = item.name || item.ref?.filename || item.id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // 上传中的素材保留原 id，落定后还能按 id 同步到新节点
+        media.push({ ...item, id: item.pending || !item.ref ? item.id : newId() });
+      }
+    }
+
+    nodeSeq += 1;
+    const id = String(nodeSeq);
+    flow.addNodes([
+      {
+        id,
+        type: "demo",
+        position: {
+          x: Math.round((minX + maxX) / 2 - NODE_WIDTH / 2),
+          y: Math.round((minY + maxY) / 2 - NODE_HEIGHT / 2),
+        },
+        // 打包节点不继承工作流与参数，只作为素材收集箱
+        data: { ...baseData("素材包"), workflow: "", media, index: 0 },
+      },
+    ]);
+
+    const ids = new Set(ordered.map((node) => node.id));
+    const edgeIds = edges.value
+      .filter((edge) => ids.has(edge.source) || ids.has(edge.target))
+      .map((edge) => edge.id);
+    if (edgeIds.length) flow.removeEdges(edgeIds);
+    flow.removeNodes([...ids]);
+    for (const removed of ids) boxSelectedIds.delete(removed);
+
+    nextTick(() => {
+      const created = flow.getNodes.value.find((node) => node.id === id);
+      if (created) flow.addSelectedNodes([created]);
+    });
+
+    return id;
+  }
+
+  // 输入框里按 Shift+G 是正常输入字母，不拦截
   function isTypingTarget(target) {
     if (!(target instanceof Element)) return false;
     return !!target.closest(
@@ -1368,6 +1623,16 @@ export function useGraph() {
   }
 
   window.addEventListener("keydown", onCopyPasteKey);
+
+  // Shift + G：把框选的节点打包成一个素材节点
+  function onPackKey(event) {
+    if (event.defaultPrevented || event.isComposing) return;
+    if (!event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (String(event.key || "").toLowerCase() !== "g") return;
+    if (isTypingTarget(event.target)) return;
+    if (packSelection()) event.preventDefault();
+  }
+  window.addEventListener("keydown", onPackKey);
 
   // Vue Flow 自带的 Backspace / Delete 删除节点不走这里，先抢在它之前存一份快照，
   // 这样键盘删除也能撤销（监听顺序上我们比 VueFlow 组件先注册）
@@ -1476,6 +1741,9 @@ export function useGraph() {
   // /prompt 只返回 prompt_id，进度通过 ComfyUI 的 /ws 推送；
   // 另外定时查结果接口兜底，避免 WebSocket 断线时任务一直停在"运行中"
   const runStates = reactive({});
+  // 预处理节点自身的运行状态：{ status, total, sent, message }
+  // 它不提交工作流，只负责按分镜派发下游节点
+  const preprocessStates = reactive({});
   const promptNodes = new Map();
   // 节点 -> 当前任务，中断时按节点找到要取消的 prompt
   const nodePrompts = new Map();
@@ -1531,6 +1799,8 @@ export function useGraph() {
 
   function setRunScope(id) {
     runScope = String(id || "");
+    // 预处理节点的编排状态不跨画布保留
+    for (const key of Object.keys(preprocessStates)) delete preprocessStates[key];
   }
 
   function executionClientId() {
@@ -1674,7 +1944,15 @@ export function useGraph() {
     const state = runStates[nodeId];
     const items = itemsFromRefs(images);
     if (items.length) {
-      appendItems(nodeId, items);
+      // 分镜节点是原地重跑：新产物替换上一次的产物，避免节点素材无限累积
+      const target = nodes.value.find((item) => item.id === nodeId);
+      if (target?.data?.fromPreprocess) {
+        target.data.media = items;
+        target.data.index = 0;
+        fitNodeToFirstImage(nodeId, items);
+      } else {
+        appendItems(nodeId, items);
+      }
       if (state) state.status = "done";
       notifyDone();
     } else if (state) {
@@ -2011,6 +2289,508 @@ export function useGraph() {
     return ids.length;
   }
 
+  // ------------------------------------------------------------ 预处理
+  // 工作流字段缓存：创建下游节点时要把分镜提示词写进工作流第一个文本字段
+  const workflowFieldsCache = new Map();
+
+  async function fetchWorkflowFields(name) {
+    if (!name) return [];
+    if (workflowFieldsCache.has(name)) return workflowFieldsCache.get(name);
+    try {
+      const response = await fetch(
+        `/infinite_canvas/api/workflows/${encodeURIComponent(name)}/fields`
+      );
+      const data = await response.json();
+      const fields = (data.fields || []).map((field) => ({
+        ...field,
+        id: `${field.nodeId}.${field.key}`,
+      }));
+      workflowFieldsCache.set(name, fields);
+      return fields;
+    } catch {
+      return [];
+    }
+  }
+
+  // 工作流配置改了之后缓存作废
+  window.addEventListener("infinite-canvas:workflows-changed", () => {
+    workflowFieldsCache.clear();
+  });
+
+  // 分镜下游节点的落位：没勾「继承」的分镜在预处理节点右侧一列往下排；
+  // 勾了的分镜接在前一个分镜节点右侧偏下，形成斜向串联
+  function shotNodePosition(source, index, prevNode = null) {
+    if (prevNode) {
+      const prevW = Math.max(NODE_WIDTH, Number(prevNode.data?.w) || NODE_WIDTH);
+      return {
+        x: Math.round(prevNode.position.x + prevW + 88),
+        y: Math.round(prevNode.position.y + 56),
+      };
+    }
+    const sourceW = Math.max(PREPROCESS_WIDTH, Number(source.data?.w) || PREPROCESS_WIDTH);
+    const x = Math.round(source.position.x + sourceW + 88);
+    const y = Math.round(
+      placeClearBelow(
+        x,
+        Math.round(source.position.y + index * (NODE_HEIGHT + NODE_GAP_Y)),
+        NODE_WIDTH,
+        NODE_HEIGHT,
+        source.id
+      )
+    );
+    return { x, y };
+  }
+
+  // 为一个分镜新建普通节点：分镜素材作为它的上游素材，自己直接跑工作流、产物回填自身
+  function createShotNode(preprocessId, shot, index, prevNode = null) {
+    const source = flow.findNode(preprocessId);
+    if (!source) return "";
+    nodeSeq += 1;
+    const id = String(nodeSeq);
+    flow.addNodes([
+      {
+        id,
+        type: "demo",
+        position: shotNodePosition(source, index, prevNode),
+        data: {
+          ...baseData(`任务 ${index + 1}`),
+          workflow: shot.workflow || defaultWorkflow(),
+          params: JSON.parse(JSON.stringify(shot.params || {})),
+          randomFields: JSON.parse(JSON.stringify(shot.randomFields || {})),
+          // 分镜素材只进上游素材，节点自身媒体留给运行产物
+          media: [],
+          index: 0,
+          inputMedia: (shot.media || []).map((item) => ({ ...item, sourceId: preprocessId })),
+          // 标记来源：重新运行时复用同一个节点，不再派生子节点
+          fromPreprocess: true,
+          preprocessId,
+          shotId: shot.id,
+          // 画布上标识这个节点属于哪个任务
+          taskLabel: `任务 ${index + 1}`,
+        },
+      },
+    ]);
+    addEdge(preprocessId, null, id, null);
+    return id;
+  }
+
+  // 复用的分镜节点如果连线被用户删掉了，运行前补回来
+  function ensureShotEdge(preprocessId, targetId) {
+    if (edges.value.some((edge) => edge.source === preprocessId && edge.target === targetId)) {
+      return;
+    }
+    addEdge(preprocessId, null, targetId, null);
+  }
+
+  // 分镜改了素材 / 工作流 / 参数后，重新运行要同步到已存在的分镜节点。
+  // 分镜素材始终作为上游素材，节点自身媒体保留上一次的产物直到新结果落定
+  function applyShotToNode(target, shot, preprocessId, index = NaN) {
+    const data = target.data || (target.data = {});
+    data.workflow = shot.workflow || defaultWorkflow();
+    data.params = JSON.parse(JSON.stringify(shot.params || {}));
+    data.randomFields = JSON.parse(JSON.stringify(shot.randomFields || {}));
+    // 来自其他上游（例如上一分镜的产物）的素材原样保留
+    const inherited = (data.inputMedia || []).filter((item) => item.sourceId !== preprocessId);
+    const shotIds = new Set((shot.media || []).map((item) => item.id));
+    data.inputMedia = [
+      ...(shot.media || []).map((item) => ({ ...item, sourceId: preprocessId })),
+      ...inherited,
+    ];
+    // 旧版把分镜素材当成节点自身媒体，这里清掉，避免和上游素材重复
+    data.media = (data.media || []).filter((item) => !shotIds.has(item.id));
+    data.index = 0;
+    data.fromPreprocess = true;
+    data.preprocessId = preprocessId;
+    data.shotId = shot.id;
+    if (Number.isFinite(index)) data.taskLabel = `任务 ${index + 1}`;
+  }
+
+  // 把分镜提示词写进工作流暴露的第一个文本字段；没有文本字段时留在 promptDraft
+  async function applyShotPrompt(target, shot) {
+    const prompt = shot.prompt || "";
+    target.data.promptDraft = prompt;
+    if (!prompt || !target.data.workflow) return;
+    const fields = await fetchWorkflowFields(target.data.workflow);
+    const field = fields.find((item) => item.type === "textarea" || item.type === "text");
+    if (!field) return;
+    // 拉字段期间节点可能已被删掉
+    const alive = flow.findNode(target.id);
+    if (!alive) return;
+    const params = { ...(alive.data.params || {}) };
+    params[field.nodeId] = { ...(params[field.nodeId] || {}), [field.key]: prompt };
+    alive.data.params = params;
+  }
+
+  // ComfyUI 的图片/音频输入用的是 "子目录/文件名" 这种相对路径
+  function shotFileName(ref) {
+    if (!ref?.filename) return "";
+    return ref.subfolder ? `${ref.subfolder}/${ref.filename}` : ref.filename;
+  }
+
+  function shotRandomInt(field) {
+    const min = Number(field.min ?? 0);
+    const max = Number(field.max ?? 4294967295);
+    const lo = Number.isFinite(min) ? Math.max(0, Math.ceil(min)) : 0;
+    const hi = Number.isFinite(max) && max >= lo ? Math.floor(max) : 4294967295;
+    return lo + Math.floor(Math.random() * (hi - lo + 1));
+  }
+
+  // 分镜节点提交时的字段取值：媒体字段从分镜素材解析，随机字段每次刷新
+  function resolveShotField(data, field, media) {
+    const fallback = field.default === undefined || field.default === null ? "" : field.default;
+    const stored = data.params?.[field.nodeId]?.[field.key];
+    const value = stored === undefined ? fallback : stored;
+    if (field.type === "image" || field.type === "audio" || field.type === "video") {
+      const item = media.find((entry) => entry.kind === field.type && entry.ref?.filename);
+      return item ? shotFileName(item.ref) : fallback;
+    }
+    if (field.type === "image_list") {
+      const names = media
+        .filter((entry) => entry.kind === "image" && entry.ref?.filename)
+        .map((entry) => shotFileName(entry.ref));
+      if (!names.length) return fallback;
+      return typeof field.default === "string" ? JSON.stringify(names) : names;
+    }
+    if (field.type === "random") {
+      // 和普通节点一致：默认每次运行重新取，骰子固定后才用存下来的值
+      if (data.randomFields?.[field.id] === false) return value;
+      return shotRandomInt(field);
+    }
+    return value;
+  }
+
+  // 分镜节点这一轮的运行 Promise：提交完就 resolve，失败则 reject
+  const shotRuns = new Map();
+
+  // 上游里还在忙的节点：正在运行 / 排队 / 上传，或者这一轮刚被派发还没提交完
+  function busyUpstreamsOf(nodeId) {
+    return edges.value
+      .filter((edge) => edge.target === nodeId)
+      .map((edge) => edge.source)
+      .filter((id) => nodeBusy(id) || shotRuns.has(id));
+  }
+
+  // 上游没结束就先挂"等待中"，等全部空闲再提交（和画布上手动点运行的等待流程一致）。
+  // 返回 false 表示等待期间被中断 / 节点被删，这次不再提交
+  async function waitUpstreamsFree(nodeId, timeoutMs = 30 * 60 * 1000) {
+    if (!busyUpstreamsOf(nodeId).length) return true;
+    markWaiting(nodeId);
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        const gone = !flow.findNode(nodeId);
+        // 等待期间被手动中断：等待状态已被清掉，直接放弃这次提交
+        const cancelled = runStates[nodeId]?.status !== "waiting";
+        const idle = !busyUpstreamsOf(nodeId).length;
+        if (gone || cancelled || idle || Date.now() - startedAt > timeoutMs) {
+          clearInterval(timer);
+          resolve(!cancelled);
+        }
+      }, 300);
+    });
+  }
+
+  // 跑一个分镜节点：分镜素材是它的上游素材（inputMedia），节点直接提交自己的工作流，
+  // 产物回填到它自己；不再派生中间节点。预处理节点最多有几十个分镜，
+  // 所以直接在这里提交，不依赖节点组件是否在视口内渲染
+  async function runShotNode(nodeId) {
+    const node = flow.findNode(nodeId);
+    if (!node) return;
+    const workflow = node.data.workflow;
+    if (!workflow) throw new Error("任务还没有选择工作流");
+
+    try {
+      // 勾了"等待上一个分镜"的分镜节点会有一条来自上一分镜的连线：
+      // 上游还在跑就先进入等待态，跑完再拿它的产物提交
+      if (!(await waitUpstreamsFree(nodeId))) return;
+      if (!flow.findNode(nodeId)) return;
+
+      const media = node.data.inputMedia || [];
+      const uploadIds = media
+        .filter((item) => item.pending && item.id)
+        .map((item) => item.id);
+      if (uploadIds.length) {
+        markUploading(nodeId);
+        await waitForUploads(uploadIds);
+        clearUploading(nodeId);
+        const failed = media.find((item) => item.error);
+        if (failed) throw new Error(`素材「${failed.name}」上传失败，请重试`);
+      }
+
+      const fields = await fetchWorkflowFields(workflow);
+      const params = {};
+      for (const field of fields) {
+        params[field.nodeId] = params[field.nodeId] || {};
+        params[field.nodeId][field.key] = resolveShotField(node.data, field, media);
+      }
+
+      // 拉字段 / 等上传期间节点可能已被删掉
+      if (!flow.findNode(nodeId)) return;
+
+      // 和普通节点一致：把上游素材里的图片按顺序交给工作流的载图节点
+      const imageRefs = media
+        .filter((item) => item.kind === "image" && item.ref?.filename)
+        .map((item) => ({
+          filename: item.ref.filename,
+          subfolder: item.ref.subfolder || "",
+          type: item.ref.type || "input",
+        }));
+      const promptId = await submitExecution({ workflow, params, imageRefs });
+      trackPrompt(nodeId, promptId);
+    } catch (error) {
+      clearWaiting(nodeId);
+      clearUploading(nodeId);
+      throw error;
+    }
+  }
+
+  // 派发一个分镜（不阻塞），Promise 存起来供等待开关使用
+  function dispatchShot(nodeId) {
+    const running = runShotNode(nodeId);
+    shotRuns.set(nodeId, running);
+    running
+      .catch(() => {})
+      .finally(() => {
+        if (shotRuns.get(nodeId) === running) shotRuns.delete(nodeId);
+      });
+    return running;
+  }
+
+  // 等分镜这一轮真正跑完：先等提交，再等节点自身的运行态结束
+  async function waitShotSettled(nodeId, timeoutMs = 30 * 60 * 1000) {
+    const running = shotRuns.get(nodeId);
+    if (running) {
+      try {
+        await running;
+      } catch {
+        // 提交失败就不用再等运行态了
+      }
+    }
+    if (!flow.findNode(nodeId)) return;
+
+    const startedAt = Date.now();
+    const isActive = () => {
+      const state = runStates[nodeId];
+      return !!state && ["uploading", "waiting", "queued", "running"].includes(state.status);
+    };
+    while (isActive() && Date.now() - startedAt < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }
+
+  function setPreprocessState(nodeId, patch) {
+    preprocessStates[nodeId] = { ...(preprocessStates[nodeId] || {}), ...patch };
+  }
+
+  // 每次派发一个令牌：取消时把令牌作废，正在等待的旧流程不再回写状态
+  const preprocessRuns = new Map();
+
+  // 取消派发：分镜节点里运行中的中断执行、排队中的移出队列、等待中的直接放弃；
+  // 已经产出的节点和素材保留不动
+  async function cancelPreprocess(nodeId) {
+    preprocessRuns.delete(nodeId);
+    const source = flow.findNode(nodeId);
+    delete preprocessStates[nodeId];
+    if (!source) return;
+    const tasks = [];
+    for (const shot of source.data.shots || []) {
+      const id = shot.nodeId;
+      if (!id || !flow.findNode(id)) continue;
+      const status = runStates[id]?.status;
+      if (status === "waiting" || status === "uploading") {
+        // 还没提交给 ComfyUI，本地状态直接清掉即可
+        clearWaiting(id);
+        clearUploading(id);
+        continue;
+      }
+      tasks.push(abortPrompt(id));
+    }
+    await Promise.allSettled(tasks);
+  }
+
+  // 等待开关用连线表达：勾选的分镜节点连到上一个分镜节点，
+  // 这样它走的就是画布现有的"上游跑完再提交"流程，预处理节点不参与排队控制
+  function syncWaitEdges(preprocessId, entries) {
+    const desired = new Set();
+    for (let i = 1; i < entries.length; i += 1) {
+      if (entries[i].wait) desired.add(`${entries[i - 1].id}->${entries[i].id}`);
+    }
+    const isWaitEdge = (edge) => {
+      if (!edge.data?.wait) return false;
+      const from = flow.findNode(edge.source);
+      const to = flow.findNode(edge.target);
+      return from?.data?.preprocessId === preprocessId && to?.data?.preprocessId === preprocessId;
+    };
+    const obsolete = new Set();
+    for (const edge of edges.value) {
+      if (!isWaitEdge(edge)) continue;
+      if (!desired.has(`${edge.source}->${edge.target}`)) obsolete.add(edge.id);
+    }
+    if (obsolete.size) edges.value = edges.value.filter((edge) => !obsolete.has(edge.id));
+
+    for (const pair of desired) {
+      const [sourceId, targetId] = pair.split("->");
+      const exists = edges.value.some(
+        (edge) => edge.source === sourceId && edge.target === targetId
+      );
+      if (exists) continue;
+      edgeSeq += 1;
+      edges.value = [
+        ...edges.value,
+        {
+          id: `e${edgeSeq}`,
+          type: "canvas",
+          source: sourceId,
+          sourceHandle: null,
+          target: targetId,
+          targetHandle: null,
+          data: { wait: true },
+        },
+      ];
+    }
+  }
+
+  // 预处理节点运行：按分镜建立 / 复用节点，然后一次性全部派发。
+  // 等待开关由分镜节点之间的连线 + 节点自身等待流程处理，这里只负责编排
+  async function runPreprocess(nodeId) {
+    const source = flow.findNode(nodeId);
+    if (!source || preprocessStates[nodeId]?.status === "running") return;
+
+    // 本次派发的令牌：取消后旧流程不再继续派发或回写状态
+    const token = {};
+    preprocessRuns.set(nodeId, token);
+    const isCancelled = () => preprocessRuns.get(nodeId) !== token;
+
+    const shots = source.data.shots || [];
+    const picked = [];
+    for (let i = 0; i < shots.length; i += 1) {
+      const shot = shots[i];
+      // 不限制素材/提示词：空分镜也派发，直接按工作流出图；已锁定的任务不需要工作流
+      if (!shot.workflow && !shot.locked) {
+        setPreprocessState(nodeId, {
+          status: "error",
+          message: `任务 ${i + 1} 还没有选择工作流`,
+        });
+        return;
+      }
+      picked.push({ shot, index: i });
+    }
+    if (!picked.length) {
+      setPreprocessState(nodeId, { status: "error", message: "请先添加任务" });
+      return;
+    }
+
+    setPreprocessState(nodeId, {
+      status: "running",
+      total: picked.length,
+      sent: 0,
+      message: "",
+    });
+
+    try {
+      // 1) 先保证每个分镜都有一个节点：存在就复用，不存在就新建。
+      // 分镜素材写进节点的上游素材，节点自己跑工作流、产物回填自身
+      const nextShots = shots.map((shot) => ({ ...shot }));
+      const entries = [];
+      // 上一个已派发的分镜节点：勾了「继承」的分镜要排在它右侧偏下
+      let prevTarget = null;
+      for (const { shot, index } of picked) {
+        if (!flow.findNode(nodeId)) return;
+        const chainFrom = shot.wait ? prevTarget : null;
+        const existed = !!(shot.nodeId && flow.findNode(shot.nodeId));
+        const targetId = existed ? shot.nodeId : createShotNode(nodeId, shot, index, chainFrom);
+        const target = flow.findNode(targetId);
+        if (!target) throw new Error("分镜节点创建失败");
+        // 已锁定且节点还在：保留上一次的产物，不清理也不重新提交
+        const skip = !!shot.locked && existed;
+        if (skip) {
+          target.data.taskLabel = `任务 ${index + 1}`;
+        } else {
+          // 重新派发前先清掉上一次产出的素材，避免新旧混在一起
+          if ((target.data.media || []).length) {
+            target.data.media = [];
+            target.data.index = 0;
+          }
+          if (chainFrom) {
+            const prevW = Math.max(NODE_WIDTH, Number(chainFrom.data?.w) || NODE_WIDTH);
+            // 还没排到上一个分镜节点右侧（首次串接 / 旧版同列节点）时重新落位，
+            // 已经串好的节点保留用户手动拖动的位置
+            const placedRight = (Number(target.position?.x) || 0) >= chainFrom.position.x + prevW;
+            if (!existed || !placedRight) {
+              target.position = shotNodePosition(source, index, chainFrom);
+              layoutRevision.value += 1;
+            }
+          }
+          applyShotToNode(target, shot, nodeId, index);
+          await applyShotPrompt(target, shot);
+        }
+        ensureShotEdge(nodeId, targetId);
+        const at = nextShots.findIndex((item) => item.id === shot.id);
+        if (at >= 0) nextShots[at].nodeId = targetId;
+        entries.push({ id: targetId, wait: !!shot.wait, locked: skip });
+        prevTarget = target;
+      }
+      // 写回分镜对应的节点 id，刷新画布后还能继续复用
+      const alive = flow.findNode(nodeId);
+      if (alive) alive.data.shots = nextShots;
+
+      // 2) 等待开关落成节点之间的连线，然后把所有分镜节点一次性派发出去：
+      // 勾了等待的节点自己会挂"等待中"，等上游跑完再提交；没勾的直接并行排队
+      syncWaitEdges(nodeId, entries);
+      if (isCancelled()) return;
+
+      const active = entries.filter((entry) => !entry.locked);
+      setPreprocessState(nodeId, { total: active.length, sent: 0 });
+
+      let failedMessage = "";
+      let sentCount = 0;
+      for (const entry of active) {
+        if (isCancelled()) return;
+        if (!flow.findNode(entry.id)) continue;
+        sentCount += 1;
+        setPreprocessState(nodeId, { sent: sentCount });
+        dispatchShot(entry.id).catch((error) => {
+          if (isCancelled()) return;
+          if (!failedMessage) {
+            failedMessage = (error && error.message) || "运行失败";
+            setPreprocessState(nodeId, { status: "error", message: failedMessage });
+          }
+        });
+      }
+      // 提交是异步的，等所有提交都落定再决定最终状态
+      await Promise.allSettled([...shotRuns.values()]);
+      if (isCancelled() || failedMessage) return;
+
+      // 保持"派发中"直到所有下游节点跑完，避免重复点击并发提交
+      await Promise.allSettled(active.map((entry) => waitShotSettled(entry.id)));
+      if (isCancelled() || failedMessage) return;
+
+      if (flow.findNode(nodeId)) {
+        const skipped = entries.length - active.length;
+        const message = !active.length
+          ? "全部任务已完成并锁定"
+          : skipped
+            ? `已跳过 ${skipped} 个锁定任务`
+            : "";
+        setPreprocessState(nodeId, { status: "done", message });
+        setTimeout(() => {
+          if (preprocessStates[nodeId]?.status === "done") delete preprocessStates[nodeId];
+        }, 2500);
+      }
+    } catch (error) {
+      if (isCancelled()) return;
+      setPreprocessState(nodeId, {
+        status: "error",
+        message: (error && error.message) || "运行失败",
+      });
+    }
+  }
+
+  // 屏幕坐标 -> 画布坐标（右键菜单位置换算）
+  function canvasPoint(clientX, clientY) {
+    return flow.screenToFlowCoordinate({ x: clientX, y: clientY });
+  }
+
   return {
     nodes,
     edges,
@@ -2022,6 +2802,7 @@ export function useGraph() {
     viewport,
     layoutRevision,
     runStates,
+    preprocessStates,
     submitExecution,
     trackPrompt,
     restoreRunStates,
@@ -2031,7 +2812,13 @@ export function useGraph() {
     importMedia,
     appendMedia,
     appendItems,
+    appendFilesToShot,
     spawnChildNode,
+    spawnPreprocessNode,
+    runPreprocess,
+    cancelPreprocess,
+    createShot,
+    canvasPoint,
     duplicateNode,
     spawnMediaNodeAt,
     spawnItemsNodeAt,

@@ -1,12 +1,20 @@
 <template>
   <div
     class="demo-node"
-    :class="{ 'is-connect-hot': connectHot, 'is-connecting': connecting }"
+    :class="{
+      'is-connect-hot': connectHot,
+      'is-connecting': connecting,
+    }"
     :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mousedown="onRootMouseDown"
     @mouseenter="enterActions"
     @mouseleave="leaveActions"
   >
+    <!-- 由预处理节点派发的节点：左上角标出它属于哪个任务 -->
+    <span v-if="data.fromPreprocess" class="task-badge">
+      {{ data.taskLabel || "预处理" }}
+    </span>
+
     <Handle
       type="target"
       :position="Position.Left"
@@ -1372,9 +1380,13 @@ function fileNameOf(ref) {
   return ref.subfolder ? `${ref.subfolder}/${ref.filename}` : ref.filename;
 }
 
-// 素材顺序：上游在前，自身在后
+// 素材顺序：上游在前，自身在后。
+// 预处理派发的分镜节点只认上游素材：自身媒体是产物，不能再当参考素材
 function mediaNames(kind) {
-  return [...inputMedia.value, ...ownMedia.value]
+  const pool = props.data.fromPreprocess
+    ? inputMedia.value
+    : [...inputMedia.value, ...ownMedia.value];
+  return pool
     .filter((item) => item.kind === kind && item.ref?.filename)
     .map((item) => fileNameOf(item.ref));
 }
@@ -1576,7 +1588,11 @@ async function run() {
 
   runError.value = "";
 
-  const targetId = ownMedia.value.length ? graph.spawnChildNode(props.id) : props.id;
+  // 预处理派发的分镜节点：分镜素材是上游素材，产物回填到它自己，
+  // 所以永远原地重跑，不再派生新节点
+  const inPlace = !!props.data.fromPreprocess;
+  const targetId = !inPlace && ownMedia.value.length ? graph.spawnChildNode(props.id) : props.id;
+  const spawnedChild = targetId !== props.id;
 
   try {
     // 上游还在上传/等待/排队/运行/刚完成时不能直接提交，否则拿不到上游产物：
@@ -1598,8 +1614,10 @@ async function run() {
         throw new Error("有素材上传失败，请在卡片上重试");
       }
     }
-    // 素材引用带 type/subfolder：产物在 output 目录时由后端按需接入 input 再提交
-    const imageRefs = ownMedia.value
+    // 素材引用带 type/subfolder：产物在 output 目录时由后端按需接入 input 再提交。
+    // 分镜节点的参考素材来自上游（分镜素材 + 上一分镜产物），自身媒体是产物不能当输入
+    const sourceMedia = inPlace ? inputMedia.value : ownMedia.value;
+    const imageRefs = sourceMedia
       .filter((item) => item.kind === "image" && item.ref?.filename)
       .map((item) => ({ ...item.ref }));
 
@@ -1623,11 +1641,12 @@ async function run() {
     });
     graph.trackPrompt(targetId, promptId);
   } catch (error) {
-    // 提交/上传失败时清掉等待状态和刚派生出的空节点
+    // 提交/上传失败时清掉等待状态和刚派生出的空节点（复用的节点保留，里面有上次的产物）
     graph.clearWaiting(targetId);
-    if (targetId !== props.id) {
+    if (spawnedChild) {
       graph.clearUploading(targetId);
       flow.removeNodes([targetId]);
+      if (props.data.childId === targetId) props.data.childId = "";
     }
     runError.value = error.message || "运行失败";
   }
@@ -1651,6 +1670,26 @@ async function run() {
 /* 选中态由 Vue Flow 挂在外部节点容器上，作用到最后一级 .demo-node */
 .vue-flow__node.selected .demo-node {
   border-color: var(--c-accent);
+}
+
+/* 预处理派发的节点：左上角任务徽标，整体落在节点外框之上，避免遮挡素材 */
+.task-badge {
+  position: absolute;
+  top: -22px;
+  left: 12px;
+  z-index: 5;
+  height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--c-accent);
+  box-shadow: 0 2px 6px var(--c-shadow);
+  color: var(--c-on-accent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* 拉线时整块节点都是连接热区，悬停给出可连接的视觉反馈 */
