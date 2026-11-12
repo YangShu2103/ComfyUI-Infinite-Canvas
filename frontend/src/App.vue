@@ -84,6 +84,7 @@ import { VueFlow, getBezierPath } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
 import PreprocessNode from "./components/Node/PreprocessNode.vue";
+import PromptNode from "./components/Node/PromptNode.vue";
 import CanvasEdge from "./components/Edge/index.vue";
 import CanvasContextMenu from "./components/CanvasContextMenu.vue";
 import TabBar from "./components/TabBar/index.vue";
@@ -120,7 +121,11 @@ function connectLinePath(line) {
 // 节点一多就是纯 GPU 负担，直接关掉
 const isFarZoom = computed(() => (Number(viewport.value?.zoom) || 1) < 0.45);
 
-const nodeTypes = { demo: markRaw(DemoNode), preprocess: markRaw(PreprocessNode) };
+const nodeTypes = {
+  demo: markRaw(DemoNode),
+  preprocess: markRaw(PreprocessNode),
+  text: markRaw(PromptNode),
+};
 const edgeTypes = { canvas: markRaw(CanvasEdge) };
 
 // 画布初始缩放：改 zoom 即可（1 = 100%）
@@ -146,6 +151,7 @@ const {
   appendFilesToShot,
   spawnChildNode,
   spawnPreprocessNode,
+  spawnPromptNode,
   runPreprocess,
   cancelPreprocess,
   createShot,
@@ -472,7 +478,9 @@ function onContextPick(key) {
     spawnPreprocessNode(point);
     return;
   }
-  // 提示词节点先占位，后续接入
+  if (key === "prompt") {
+    spawnPromptNode(point);
+  }
 }
 
 // Vue Flow 的画布平移走的是 d3-zoom 的 mousedown，pointerdown 拦不住它
@@ -497,6 +505,7 @@ onBeforeUnmount(() => {
 // 节点组件需要往画布上派生节点 / 追加素材，通过 provide 复用同一份图数据
 provide("canvasGraph", {
   nodes,
+  edges,
   appendMedia,
   appendItems,
   appendFilesToShot,
@@ -603,22 +612,28 @@ async function onDrop(event) {
     return;
   }
 
-  // 从资产库拖出来的文件：拖到节点上追加素材，落在空白处新建节点
+  // 从资产库拖出来的文件：支持一次带多张（Ctrl/⌘ 多选），拖到节点上追加素材，落在空白处新建节点
   const libraryAsset = event.dataTransfer?.getData(FILE_ASSET_DRAG_TYPE);
   if (libraryAsset) {
-    let item = null;
+    let refs = [];
     try {
-      const ref = JSON.parse(libraryAsset);
-      item = itemsFromRefs([ref])[0] || null;
+      const parsed = JSON.parse(libraryAsset);
+      refs = (Array.isArray(parsed) ? parsed : [parsed]).filter((ref) => ref && ref.filename);
     } catch {
-      item = null;
+      return;
     }
-    if (!item) return;
+    const items = itemsFromRefs(refs);
+    if (!items.length) return;
 
     const targetEl = event.target instanceof Element ? event.target.closest(".vue-flow__node") : null;
     const targetId = targetEl?.dataset.id;
-    if (targetId && appendItems(targetId, [item])) return;
-    spawnItemsNodeAt([item], event.clientX, event.clientY);
+    // 落在节点上就交给节点自己处理：同名素材会被去重跳过，
+    // 但这次拖放已经被节点消费，不能再额外新建一个节点
+    if (targetId) {
+      appendItems(targetId, items);
+      return;
+    }
+    spawnItemsNodeAt(items, event.clientX, event.clientY);
     return;
   }
 

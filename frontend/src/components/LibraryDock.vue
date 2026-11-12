@@ -187,11 +187,14 @@
             @wheel="closePreview"
           >
             <div
-              v-for="file in assets"
+              v-for="(file, index) in assets"
               :key="assetKey(file)"
               class="asset-cell"
+              :class="{ 'is-selected': selectedKeys.has(assetKey(file)) }"
+              :data-key="assetKey(file)"
               draggable="true"
               :title="file.filename"
+              @click="onAssetClick($event, file, index)"
               @dragstart="onAssetDragStart($event, file)"
               @mouseenter="openPreview($event, file)"
               @mouseleave="closePreview"
@@ -219,7 +222,9 @@
             </p>
           </div>
 
-          <footer class="lib-foot">拖到画布空白处新建节点，拖到节点上添加素材</footer>
+          <footer class="lib-foot">
+            Ctrl/⌘ 点选、Shift 连选多张后可一起拖拽；拖到空白处新建节点，拖到节点上添加素材
+          </footer>
         </template>
 
         <!-- 任务队列日志 -->
@@ -825,11 +830,13 @@ function onGridScroll(event) {
 function setKind(next) {
   if (kind.value === next) return;
   kind.value = next;
+  clearSelection();
 }
 
 function setCategory(next) {
   if (category.value === next) return;
   category.value = next;
+  clearSelection();
 }
 
 function assetKey(file) {
@@ -881,12 +888,136 @@ function extOf(name) {
 
 function onAssetDragStart(event, file) {
   closePreview();
+  const key = assetKey(file);
+  // 拖的是已选中的素材且选中多张：一起拖走；否则只拖当前这张，已有选择保持不变
+  const picked =
+    selectedKeys.value.has(key) && selectedKeys.value.size > 1
+      ? assets.value.filter((item) => selectedKeys.value.has(assetKey(item)))
+      : [file];
   event.dataTransfer.effectAllowed = "copy";
-  event.dataTransfer.setData("text/plain", file.filename);
+  event.dataTransfer.setData("text/plain", picked.map((item) => item.filename).join("\n"));
   event.dataTransfer.setData(
     FILE_ASSET_DRAG_TYPE,
-    JSON.stringify({ filename: file.filename, subfolder: file.subfolder || "", type: file.type })
+    JSON.stringify(
+      picked.map((item) => ({
+        filename: item.filename,
+        subfolder: item.subfolder || "",
+        type: item.type || kind.value,
+      }))
+    )
   );
+  if (picked.length > 1) setDragStack(event, picked, file);
+}
+
+// 多选拖拽：把前几张素材的格子克隆出来叠成一小摞（图片、视频、音频各自保留原本的缩略图 / 角标），
+// 右下角再标一下总张数
+function setDragStack(event, files, dragged) {
+  const cell = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (!cell) return;
+  const rect = cell.getBoundingClientRect();
+  const size = Math.max(64, Math.min(120, rect.width || 96));
+  const gap = 7;
+
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = [
+    "position:fixed",
+    "top:-1000px",
+    "left:-1000px",
+    `width:${size + gap * 2}px`,
+    `height:${size + gap * 2}px`,
+    "pointer-events:none",
+  ].join(";");
+
+  const cells = [...(cell.parentElement?.querySelectorAll(".asset-cell") || [])];
+  const draggedKey = assetKey(dragged);
+  // 先画另外几层，最后画当前拖的这张，保证它在最上面
+  const others = files.filter((item) => assetKey(item) !== draggedKey).slice(0, 2);
+  const layers = [...others, dragged];
+
+  layers.forEach((file, i) => {
+    const source =
+      cells.find((el) => el.dataset.key === assetKey(file)) || (file === dragged ? cell : null);
+    if (!source) return;
+    const clone = source.cloneNode(true);
+    clone.classList.remove("is-selected");
+    // 拖拽影像要立刻截图，缩略图强制同步解码，避免叠出来的是空白块
+    clone.querySelectorAll("img").forEach((img) => {
+      img.loading = "eager";
+      img.decoding = "sync";
+    });
+    clone.style.cssText = [
+      "position:absolute",
+      `left:${i * gap}px`,
+      `top:${i * gap}px`,
+      `width:${size}px`,
+      `height:${size}px`,
+      "margin:0",
+      "padding-top:0",
+      "border-radius:10px",
+      "box-shadow:0 6px 18px rgba(0,0,0,.35)",
+    ].join(";");
+    wrapper.appendChild(clone);
+  });
+
+  const count = document.createElement("div");
+  count.textContent = String(files.length);
+  count.style.cssText = [
+    "position:absolute",
+    `right:0`,
+    `bottom:0`,
+    "min-width:20px",
+    "height:20px",
+    "padding:0 5px",
+    "border-radius:999px",
+    "background:var(--c-accent)",
+    "color:var(--c-on-accent)",
+    "font-size:11px",
+    "font-weight:600",
+    "line-height:20px",
+    "text-align:center",
+  ].join(";");
+  wrapper.appendChild(count);
+
+  document.body.appendChild(wrapper);
+  event.dataTransfer.setDragImage(wrapper, size / 2, size / 2);
+  setTimeout(() => wrapper.remove(), 0);
+}
+
+// ------------------------------------------------------------ 资产多选
+const selectedKeys = ref(new Set());
+let anchorIndex = -1;
+
+function clearSelection() {
+  if (!selectedKeys.value.size) return;
+  selectedKeys.value = new Set();
+  anchorIndex = -1;
+}
+
+function onAssetClick(event, file, index) {
+  const key = assetKey(file);
+  if (event.shiftKey && anchorIndex >= 0) {
+    // Shift：从锚点到当前格子的连续区间
+    const start = Math.min(anchorIndex, index);
+    const end = Math.max(anchorIndex, index);
+    const next = new Set();
+    for (let i = start; i <= end; i += 1) {
+      const item = assets.value[i];
+      if (item) next.add(assetKey(item));
+    }
+    selectedKeys.value = next;
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    // Ctrl / ⌘：逐张切换
+    const next = new Set(selectedKeys.value);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    selectedKeys.value = next;
+    anchorIndex = index;
+    return;
+  }
+  selectedKeys.value = new Set([key]);
+  anchorIndex = index;
 }
 
 // 悬停素材时的快速预览气泡：和节点媒体条一样的气泡（Teleport 到 body，避免被面板裁剪）
@@ -1292,10 +1423,34 @@ function placePreview(width, height, ready) {
   border-radius: 9px;
   background: var(--c-surface-2);
   cursor: grab;
+  user-select: none;
 }
 
 .asset-cell:hover {
   border-color: color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+
+.asset-cell.is-selected {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 1px var(--c-accent) inset;
+}
+
+.asset-cell.is-selected::after {
+  content: "✓";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  font-size: 10px;
+  line-height: 1;
 }
 
 .asset-cell img {

@@ -232,6 +232,7 @@ export function useCanvas({
           data?.h,
           data?.index,
           data?.workflow,
+          data?.text,
           toRaw(data?.params),
           toRaw(data?.randomFields),
           mediaFingerprint(data?.media),

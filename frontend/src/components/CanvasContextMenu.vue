@@ -14,9 +14,8 @@
         @contextmenu.prevent
         @mousedown.stop
       >
-        <button class="ctx-item" type="button" disabled>
+        <button class="ctx-item" type="button" @click="pick('prompt')">
           <span>提示词节点</span>
-          <span class="ctx-tag">开发中</span>
         </button>
         <button class="ctx-item" type="button" @click="pick('preprocess')">
           <span>预处理节点</span>
@@ -103,14 +102,5 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeyDown, true));
 .ctx-item:disabled {
   color: var(--c-muted);
   cursor: default;
-}
-
-.ctx-tag {
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--c-panel-2);
-  color: var(--c-muted);
-  font-size: 10px;
-  line-height: 16px;
 }
 </style>

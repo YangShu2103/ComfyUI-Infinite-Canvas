@@ -378,6 +378,19 @@
             </div>
           </template>
         </div>
+        <!-- 上游文本节点：不可编辑的展示块，运行时拼在当前提示词前面一起提交 -->
+        <div v-if="upstreamPrompts.length" class="panel-upstream">
+          <div
+            v-for="item in upstreamPrompts"
+            :key="item.id"
+            class="panel-text is-upstream"
+            :title="item.label"
+          >
+            <template v-if="item.text">{{ item.text }}</template>
+            <span v-else class="panel-text-empty">未填写</span>
+          </div>
+        </div>
+
         <!-- 提示词框常驻：未选工作流时只做占位提示 -->
         <div class="panel-prompt">
           <textarea
@@ -755,6 +768,23 @@ onBeforeUnmount(() => {
 const ownMedia = computed(() => props.data.media || []);
 // 上游带进来的素材：只在面板里展示，不算节点自身媒体
 const inputMedia = computed(() => props.data.inputMedia || []);
+
+// 上游文本节点：按连线顺序取它们的文本，在面板里显示成只读框，运行时拼进提示词一起提交
+const upstreamPrompts = computed(() => {
+  const edgeList = graph?.edges?.value || [];
+  const nodeMap = new Map((graph?.nodes?.value || []).map((node) => [node.id, node]));
+  return edgeList
+    .filter((edge) => edge.target === props.id && nodeMap.get(edge.source)?.type === "text")
+    .map((edge) => {
+      const source = nodeMap.get(edge.source);
+      return {
+        id: source.id,
+        label: source.data?.label || "文本节点",
+        text: source.data?.text || "",
+      };
+    });
+});
+
 const index = computed(() => {
   const len = ownMedia.value.length;
   if (!len) return 0;
@@ -1627,6 +1657,31 @@ async function run() {
     for (const field of fields.value) {
       params[field.nodeId] = params[field.nodeId] || {};
       params[field.nodeId][field.key] = resolveValue(field);
+    }
+
+    // 上游文本节点按连线顺序拼接，放在自身提示词前面一起提交；
+    // 只影响提交内容，不改动面板里自己的提示词
+    const upstreamText = upstreamPrompts.value
+      .map((item) => (item.text || "").trim())
+      .filter(Boolean)
+      .join("\n");
+    if (upstreamText && promptField.value) {
+      const { nodeId, key } = promptField.value;
+      params[nodeId] = params[nodeId] || {};
+      params[nodeId][key] = [upstreamText, params[nodeId][key]]
+        .filter((value) => value != null && String(value).trim() !== "")
+        .join("\n");
+
+      // 派生出的下游节点：把这次实际提交的提示词写进它的参数，
+      // 打开下游节点看到的就是「上游文本 + 自身提示词」，再次运行也沿用它
+      if (spawnedChild) {
+        const child = flow.findNode(targetId);
+        if (child) {
+          const next = { ...(child.data.params || {}) };
+          next[nodeId] = { ...(next[nodeId] || {}), [key]: params[nodeId][key] };
+          child.data.params = next;
+        }
+      }
     }
 
     // 等待期间节点可能被删掉，这种情况就不再提交
@@ -2536,6 +2591,26 @@ async function run() {
 /* 提示词框常驻，固定在参数区最上方 */
 .panel-prompt {
   margin-bottom: 8px;
+}
+
+/* 上游文本节点的展示块，排在自身提示词框上方；和提示词框同底色，但不可编辑 */
+.panel-upstream {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.panel-text.is-upstream {
+  height: 60px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: default;
+}
+
+.panel-text-empty {
+  color: var(--c-muted);
 }
 
 .panel-text {

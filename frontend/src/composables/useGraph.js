@@ -21,6 +21,9 @@ const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 0.7 };
 // 预处理节点默认尺寸：总素材区 + 约 2.2 个任务可见
 const PREPROCESS_WIDTH = 620;
 const PREPROCESS_HEIGHT = 880;
+// 文本节点默认尺寸：标题 + 一块够写长提示词的输入框
+const PROMPT_WIDTH = 460;
+const PROMPT_HEIGHT = 280;
 
 // ComfyUI 的 /view 地址：素材存在 input 目录，产物存在 output 目录，前端只存引用
 function mediaUrl(ref) {
@@ -281,6 +284,41 @@ export function useGraph() {
       },
     ]);
     // 新建后立即选中并展开参数面板，不用再点一下
+    nextTick(() => {
+      const created = flow.getNodes.value.find((node) => node.id === id);
+      if (created) flow.addSelectedNodes([created]);
+    });
+    return id;
+  }
+
+  // 右键菜单「提示词节点」：在鼠标位置创建一个纯文本节点，只有右侧输出端口
+  function spawnPromptNode(position) {
+    captureUndo(true);
+    nodeSeq += 1;
+    const id = String(nodeSeq);
+    const label = "文本节点";
+    for (const node of flow.getNodes.value) {
+      if (node.selected) node.selected = false;
+    }
+    flow.addNodes([
+      {
+        id,
+        type: "text",
+        selected: true,
+        position: {
+          x: Math.round(position.x - PROMPT_WIDTH / 2),
+          y: Math.round(position.y - PROMPT_HEIGHT / 2),
+        },
+        data: {
+          ...baseData(label),
+          // 文本节点不参与出图，工作流留空
+          workflow: "",
+          text: "",
+          w: PROMPT_WIDTH,
+          h: PROMPT_HEIGHT,
+        },
+      },
+    ]);
     nextTick(() => {
       const created = flow.getNodes.value.find((node) => node.id === id);
       if (created) flow.addSelectedNodes([created]);
@@ -1277,6 +1315,8 @@ export function useGraph() {
       event.target.closest(".vue-flow__node")?.getAttribute("data-id") || snappedNodeId;
     if (dropNodeId === start.nodeId && event.target.closest(".vue-flow__handle")) return;
     if (dropNodeId && dropNodeId !== start.nodeId && flow.findNode(dropNodeId)) {
+      // 文本节点只有输出端口：从别处拉线落在它身上时不建连线
+      if (start.handleType === "source" && flow.findNode(dropNodeId)?.type === "text") return;
       captureUndo(true);
       if (start.handleType === "source") {
         addEdge(start.nodeId, start.handleId, dropNodeId, null);
@@ -1531,7 +1571,10 @@ export function useGraph() {
   // 把框选的节点合并成一个只收集素材的节点：新节点落位在选区中心，
   // 素材按画布位置从上到下、从左到右排列，同名去重；原节点连同上下游连线一起删除
   function packSelection() {
-    const selected = (flow.getSelectedNodes?.value || []).filter(Boolean);
+    // 文本节点只传提示词、没有素材，打包时跳过并保留它们
+    const selected = (flow.getSelectedNodes?.value || []).filter(
+      (node) => node && node.type !== "text"
+    );
     if (selected.length < 2) return "";
 
     captureUndo(true);
@@ -1588,10 +1631,8 @@ export function useGraph() {
     flow.removeNodes([...ids]);
     for (const removed of ids) boxSelectedIds.delete(removed);
 
-    nextTick(() => {
-      const created = flow.getNodes.value.find((node) => node.id === id);
-      if (created) flow.addSelectedNodes([created]);
-    });
+    // 打包后不保留任何选中状态：新节点若被选中会带着框选高亮并自动展开参数面板
+    flow.removeSelectedNodes();
 
     return id;
   }
@@ -2815,6 +2856,7 @@ export function useGraph() {
     appendFilesToShot,
     spawnChildNode,
     spawnPreprocessNode,
+    spawnPromptNode,
     runPreprocess,
     cancelPreprocess,
     createShot,

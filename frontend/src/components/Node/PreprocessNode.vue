@@ -1536,8 +1536,12 @@ html[data-theme="light"] .pp-node {
   pointer-events: none;
 }
 
-/* 一组里的中间任务：上下边框都交给相邻任务封口 */
+/* 一组里的中间任务：上下边框都交给相邻任务封口。
+   这里的 border-top-color 必须显式写回透明：
+   上面的 :has(+ .pp-shot.is-wait) 用了 border-color 简写且优先级更高，
+   会把中间任务的顶边重新染成高亮色，接缝处看起来多一条分割线 */
 .pp-shot.is-wait:has(+ .pp-shot.is-wait) {
+  border-top-color: transparent;
   border-bottom-color: transparent;
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
