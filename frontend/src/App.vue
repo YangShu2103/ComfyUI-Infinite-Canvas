@@ -5,6 +5,8 @@
       class="flow-wrap"
       :class="{ 'is-drop-file': dragging, 'is-far': isFarZoom }"
       @dblclick.capture="onDblClick"
+      @mousemove.passive="onCanvasPointerMove"
+      @mouseleave="clearPastePointer"
       @click="rememberNode"
       @dragover.prevent="onDragOver"
       @dragleave="onDragLeave"
@@ -161,6 +163,8 @@ const {
   spawnMediaNodeAt,
   spawnItemsNodeAt,
   itemsFromRefs,
+  setPastePointer,
+  clearPastePointer,
   uploadAsset,
   retryUpload,
   waitForUploads,
@@ -183,6 +187,16 @@ const {
   setRunScope,
   restoreRunStates,
 } = useGraph();
+
+// 记录鼠标停在画布上的位置：Ctrl/Cmd + V 时把副本粘到这里；
+// 鼠标在资产库、工具栏等浮层上时不算画布位置，退回原有落位逻辑
+function onCanvasPointerMove(event) {
+  if (!(event.target instanceof Element) || !event.target.closest(".vue-flow")) {
+    clearPastePointer();
+    return;
+  }
+  setPastePointer(event.clientX, event.clientY);
+}
 
 // 最近一次点过的节点：纸飞机按钮优先聚焦它（没有点过节点就只是恢复默认视图）
 const lastNodeId = ref(null);

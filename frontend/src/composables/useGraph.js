@@ -1407,10 +1407,21 @@ export function useGraph() {
   }
 
   // ------------------------------------------------------------ 复制 / 粘贴
-  // Ctrl/Cmd + C 记住选中的节点（支持多选），Ctrl/Cmd + V 在下方空白处生成副本。
+  // Ctrl/Cmd + C 记住选中的节点（支持多选），Ctrl/Cmd + V 在鼠标位置生成副本；
+  // 鼠标不在画布上时退回「选中节点下方空白处」。
   // 与 Alt 拖拽复制不同：这里不复制上游连线，也不带上游媒体，
   // 选中节点之间的内部连线会一起复制
   let clipboard = null;
+  // 鼠标最后停在画布上的屏幕坐标，粘贴时再换算成画布坐标（期间画布可能被平移缩放）
+  let pastePointer = null;
+
+  function setPastePointer(x, y) {
+    pastePointer = { x, y };
+  }
+
+  function clearPastePointer() {
+    pastePointer = null;
+  }
 
   function copySelection() {
     const selected = flow.getSelectedNodes?.value || [];
@@ -1504,8 +1515,18 @@ export function useGraph() {
     );
     const boxW = box.maxX - box.minX;
     const boxH = box.maxY - box.minY;
-    const top = placeClearBelow(box.minX, box.minY + boxH + NODE_GAP_Y, boxW, boxH);
-    const offsetY = top - box.minY;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (pastePointer) {
+      // 鼠标在画布上：整块选区的中心对准光标
+      const point = flow.screenToFlowCoordinate(pastePointer);
+      offsetX = point.x - (box.minX + boxW / 2);
+      offsetY = point.y - (box.minY + boxH / 2);
+    } else {
+      // 鼠标不在画布上：沿用原来的落位，整块选区往下找一块没被占用的空位
+      const top = placeClearBelow(box.minX, box.minY + boxH + NODE_GAP_Y, boxW, boxH);
+      offsetY = top - box.minY;
+    }
     const created = [];
     const idMap = new Map();
 
@@ -1518,7 +1539,10 @@ export function useGraph() {
         id,
         type: entry.type || "demo",
         selected: true,
-        position: { x: entry.position.x, y: entry.position.y + offsetY },
+        position: {
+          x: Math.round(entry.position.x + offsetX),
+          y: Math.round(entry.position.y + offsetY),
+        },
         data: {
           ...baseData(`${nodeSeq}`),
           ...data,
@@ -1571,9 +1595,9 @@ export function useGraph() {
   // 把框选的节点合并成一个只收集素材的节点：新节点落位在选区中心，
   // 素材按画布位置从上到下、从左到右排列，同名去重；原节点连同上下游连线一起删除
   function packSelection() {
-    // 文本节点只传提示词、没有素材，打包时跳过并保留它们
+    // 文本节点只传提示词、预处理节点是批量派发容器，打包时都跳过并保留它们
     const selected = (flow.getSelectedNodes?.value || []).filter(
-      (node) => node && node.type !== "text"
+      (node) => node && node.type !== "text" && node.type !== "preprocess"
     );
     if (selected.length < 2) return "";
 
@@ -2865,6 +2889,8 @@ export function useGraph() {
     spawnMediaNodeAt,
     spawnItemsNodeAt,
     itemsFromRefs,
+    setPastePointer,
+    clearPastePointer,
     uploadAsset,
     retryUpload,
     waitForUploads,
