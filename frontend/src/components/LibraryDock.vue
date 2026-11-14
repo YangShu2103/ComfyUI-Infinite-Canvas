@@ -60,21 +60,57 @@
 
     <!-- 右侧滑出面板 -->
     <Transition name="dock">
-      <section v-if="panel" class="library-panel" @wheel.stop @mousedown.stop>
+      <section
+        v-if="panel"
+        class="library-panel"
+        :class="{ 'is-dragging': !!dragId }"
+        @wheel.stop
+        @mousedown.stop
+      >
         <!-- 提示词 -->
         <template v-if="panel === 'prompt'">
           <header class="lib-head">
             <span class="lib-title">提示词</span>
-            <span class="lib-count">{{ prompts.length }} 条</span>
+            <span class="lib-count">{{ filteredPrompts.length }} / {{ prompts.length }} 条</span>
           </header>
+
+          <!-- 类型筛选：同时是拖放目标，把条目拖到某个类型上就改类型 -->
+          <div class="prompt-types">
+            <button
+              v-for="tab in promptTabs"
+              :key="tab.value"
+              class="prompt-type"
+              :class="{
+                'is-active': promptType === tab.value,
+                'is-drop': typeDrop === tab.value && !!tab.value,
+              }"
+              type="button"
+              @click="promptType = tab.value"
+              @dragover.prevent="onTypeDragOver($event, tab.value)"
+              @dragleave="onTypeDragLeave($event, tab.value)"
+              @drop.prevent.stop="onTypeDrop($event, tab.value)"
+            >
+              {{ tab.label }}<span class="prompt-type-count">{{ tab.count }}</span>
+            </button>
+          </div>
 
           <div class="lib-list">
             <article
-              v-for="item in prompts"
+              v-for="item in filteredPrompts"
               :key="item.id"
               class="prompt-item"
-              @click="onPromptClick(item)"
+              :class="{
+                'is-dragging': dragId === item.id,
+                'is-drop-before': dropId === item.id && !dropAfter,
+                'is-drop-after': dropId === item.id && dropAfter,
+              }"
+              draggable="true"
+              @dblclick="onPromptClick(item)"
               @mousedown="onItemMouseDown"
+              @dragstart="onPromptDragStart($event, item)"
+              @dragover.prevent="onPromptDragOver($event, item)"
+              @dragend="resetDrag"
+              @drop.prevent.stop="onPromptDrop($event, item)"
             >
               <div class="prompt-name-row">
                 <input
@@ -86,6 +122,7 @@
                   placeholder="未命名"
                   spellcheck="false"
                   @click.stop
+                  @dblclick.stop
                   @keydown.enter.prevent="$event.target.blur()"
                   @keydown.esc.prevent="cancelRename($event)"
                   @blur="saveName(item)"
@@ -94,30 +131,39 @@
                   v-else
                   class="prompt-name"
                   type="button"
-                  :title="item.name || '未命名'"
-                  @click.stop="startRename(item)"
+                  :title="`${item.name || '未命名'} · 双击改名`"
+                  @click.stop
+                  @dblclick.stop="startRename(item)"
                 >
                   {{ item.name || "未命名" }}
                 </button>
+                <span class="prompt-type-tag">{{ item.type || "通用" }}</span>
               </div>
               <p class="prompt-text">{{ item.text }}</p>
               <button class="item-del" type="button" title="删除" @click.stop="removePrompt(item)">
                 ×
               </button>
             </article>
-            <p v-if="!prompts.length" class="lib-empty">还没有收藏的提示词</p>
+            <p v-if="!filteredPrompts.length" class="lib-empty">
+              {{ prompts.length ? "这个类型下还没有提示词" : "还没有收藏的提示词" }}
+            </p>
           </div>
 
-          <!-- 底部收藏框：上方名称、下方内容，收藏按钮压在文本框右下角 -->
+          <!-- 底部收藏框：上方类型 + 名称，下方内容，收藏按钮压在文本框右下角 -->
           <div class="lib-compose">
             <div class="compose-box">
-              <input
-                v-model="draftName"
-                class="compose-name"
-                maxlength="60"
-                placeholder="未命名"
-                spellcheck="false"
-              />
+              <div class="compose-head">
+                <select v-model="draftType" class="compose-type">
+                  <option v-for="type in PROMPT_TYPES" :key="type" :value="type">{{ type }}</option>
+                </select>
+                <input
+                  v-model="draftName"
+                  class="compose-name"
+                  maxlength="60"
+                  placeholder="未命名"
+                  spellcheck="false"
+                />
+              </div>
               <div class="compose-text-wrap">
                 <textarea
                   v-model="draft"
@@ -363,14 +409,14 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { FILE_ASSET_DRAG_TYPE, useLibrary } from "../composables/useLibrary.js";
+import { FILE_ASSET_DRAG_TYPE, PROMPT_DRAG_TYPE, useLibrary } from "../composables/useLibrary.js";
 
-const { panel, targetCount, toggle, insertPrompt } = useLibrary();
+const { panel, targetCount, toggle, insertPrompt, captureActive } = useLibrary();
 
 const footerHint = computed(() => {
-  if (!targetCount.value) return "未选中节点时，点击条目会复制到剪贴板";
-  if (targetCount.value === 1) return "点击条目插入到选中的节点（框内全选可整段替换）";
-  return `点击条目会同时插入到选中的 ${targetCount.value} 个节点`;
+  if (!targetCount.value) return "未选中节点时，双击条目会复制到剪贴板";
+  if (targetCount.value === 1) return "双击条目插入到选中的节点（框内全选可整段替换）";
+  return `双击条目会同时插入到选中的 ${targetCount.value} 个节点`;
 });
 
 // 没有可写入的节点时，点击条目复制到剪贴板，底部短暂提示一下
@@ -394,6 +440,10 @@ onBeforeUnmount(() => {
 });
 
 const prompts = ref([]);
+// 提示词类型：目前固定三种，老数据没有 type 时按「通用」处理
+const PROMPT_TYPES = ["通用", "风格模块", "反推模版"];
+const promptType = ref("通用");
+const draftType = ref("通用");
 const draftName = ref("");
 const draft = ref("");
 const saving = ref(false);
@@ -401,6 +451,165 @@ const saving = ref(false);
 const editingId = ref("");
 const nameDraft = ref("");
 const nameInputEl = ref(null);
+
+const promptTabs = computed(() => {
+  const countOf = (type) =>
+    prompts.value.filter((item) => (item.type || "通用") === type).length;
+  // 「全部」放在最后，三种类型按通用 → 风格模块 → 反推模版排列
+  return [
+    ...PROMPT_TYPES.map((type) => ({ value: type, label: type, count: countOf(type) })),
+    { value: "", label: "全部", count: prompts.value.length },
+  ];
+});
+
+const filteredPrompts = computed(() =>
+  promptType.value
+    ? prompts.value.filter((item) => (item.type || "通用") === promptType.value)
+    : prompts.value
+);
+
+// ------------------------------------------------------------ 拖拽排序 / 改类型
+const dragId = ref("");
+const dropId = ref("");
+const dropAfter = ref(false);
+const typeDrop = ref("");
+
+function onPromptDragStart(event, item) {
+  // 改名输入框里不启动拖拽，否则选词会被拖走
+  if (editingId.value === item.id) {
+    event.preventDefault();
+    return;
+  }
+  dragId.value = item.id;
+  dropId.value = "";
+  typeDrop.value = "";
+  // 允许拖到画布/节点上（copy）与面板内排序（move）两种落点
+  event.dataTransfer.effectAllowed = "copyMove";
+  event.dataTransfer.setData("text/plain", item.id);
+  // 画布和节点读这份数据：把提示词内容直接带过去，不依赖面板状态
+  event.dataTransfer.setData(
+    PROMPT_DRAG_TYPE,
+    JSON.stringify({
+      id: item.id,
+      name: item.name || "",
+      text: item.text || "",
+      type: item.type || "通用",
+    })
+  );
+  // 自定义拖拽影子：一张小卡片（名称 + 类型），热点放在顶部正中，
+  // 卡片显示在光标正下方，既不挡光标也不挡类型胶囊
+  const ghost = document.createElement("div");
+  ghost.style.cssText =
+    "position:fixed;top:-200px;left:-200px;width:190px;height:66px;pointer-events:none;";
+  const card = document.createElement("div");
+  card.style.cssText =
+    "position:absolute;left:20px;top:20px;width:150px;height:30px;box-sizing:border-box;display:flex;align-items:center;gap:6px;padding:0 10px;border:1px solid var(--c-accent);border-radius:8px;background:var(--c-surface-3);color:var(--c-text);font-size:11px;box-shadow:0 6px 16px rgba(0,0,0,0.35);overflow:hidden;white-space:nowrap;";
+  const name = document.createElement("span");
+  name.style.cssText =
+    "flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600;";
+  name.textContent = item.name || item.text.slice(0, 18) || "提示词";
+  const tag = document.createElement("span");
+  tag.style.cssText =
+    "flex:0 0 auto;height:16px;padding:0 6px;border-radius:999px;background:var(--c-accent-weak);color:var(--c-accent-ink);font-size:10px;line-height:16px;";
+  tag.textContent = item.type || "通用";
+  card.append(name, tag);
+  ghost.appendChild(card);
+  document.body.appendChild(ghost);
+  event.dataTransfer.setDragImage(ghost, 95, 0);
+  requestAnimationFrame(() => ghost.remove());
+}
+
+function onPromptDragOver(event, item) {
+  if (!dragId.value || dragId.value === item.id) {
+    dropId.value = "";
+    return;
+  }
+  event.dataTransfer.dropEffect = "move";
+  const rect = event.currentTarget.getBoundingClientRect();
+  dropAfter.value = event.clientY > rect.top + rect.height / 2;
+  dropId.value = item.id;
+  typeDrop.value = "";
+}
+
+function resetDrag() {
+  dragId.value = "";
+  dropId.value = "";
+  typeDrop.value = "";
+}
+
+async function onPromptDrop(event, item) {
+  const movingId = dragId.value;
+  const after = dropAfter.value;
+  resetDrag();
+  if (!movingId || movingId === item.id) return;
+  await reorderPrompt(movingId, item.id, after);
+}
+
+async function reorderPrompt(movingId, targetId, after) {
+  const list = prompts.value.slice();
+  const from = list.findIndex((entry) => entry.id === movingId);
+  if (from < 0) return;
+  const [moved] = list.splice(from, 1);
+  let to = list.findIndex((entry) => entry.id === targetId);
+  if (to < 0) to = list.length;
+  if (after) to += 1;
+  list.splice(to, 0, moved);
+  prompts.value = list;
+  try {
+    const response = await fetch("/infinite_canvas/api/library/prompts/order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: list.map((entry) => entry.id) }),
+    });
+    const data = await response.json();
+    if (data.prompts) prompts.value = data.prompts;
+  } catch {
+    // 保存失败保持本地顺序，下次打开面板会重新拉取
+  }
+}
+
+function onTypeDragOver(event, value) {
+  if (!dragId.value || !value) {
+    typeDrop.value = "";
+    return;
+  }
+  event.dataTransfer.dropEffect = "move";
+  typeDrop.value = value;
+  dropId.value = "";
+}
+
+function onTypeDragLeave(event, value) {
+  if (typeDrop.value === value) typeDrop.value = "";
+}
+
+async function onTypeDrop(event, value) {
+  const movingId = dragId.value;
+  resetDrag();
+  if (!movingId || !value) return;
+  const item = prompts.value.find((entry) => entry.id === movingId);
+  if (!item || (item.type || "通用") === value) return;
+  await changePromptType(item, value);
+}
+
+async function changePromptType(item, type) {
+  prompts.value = prompts.value.map((entry) =>
+    entry.id === item.id ? { ...entry, type } : entry
+  );
+  try {
+    const response = await fetch(
+      `/infinite_canvas/api/library/prompts/${encodeURIComponent(item.id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      }
+    );
+    const data = await response.json();
+    if (data.prompts) prompts.value = data.prompts;
+  } catch {
+    // 失败时保留本地修改，下次打开面板会重新拉取
+  }
+}
 
 const kind = ref("input");
 // 二级分类：全部 / 图片 / 音频 / 视频
@@ -691,7 +900,7 @@ async function addPrompt() {
     const response = await fetch("/infinite_canvas/api/library/prompts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: draftName.value.trim(), text }),
+      body: JSON.stringify({ name: draftName.value.trim(), text, type: draftType.value }),
     });
     const data = await response.json();
     if (data.prompts) prompts.value = data.prompts;
@@ -704,11 +913,11 @@ async function addPrompt() {
   }
 }
 
-// 点条目时不让提示词框失焦，否则拿不到光标/选区，"全选后替换整段"就失效了；
-// 重命名输入框里要允许鼠标选词，单独放过
+// 点条目前记住当前聚焦的输入框，双击插入时仍能按原光标位置写入；
+// 这里不能 preventDefault，否则浏览器不会再发起原生拖拽
 function onItemMouseDown(event) {
   if (event.target.closest(".prompt-name-input")) return;
-  event.preventDefault();
+  captureActive();
 }
 
 // 点名称进入重命名；名称区域在整卡片里，必须阻止冒泡，否则会触发"插入提示词"
@@ -1253,13 +1462,34 @@ function placePreview(width, height, ready) {
   border-color: var(--c-accent);
 }
 
+.compose-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--c-line);
+}
+
+.compose-type {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-surface);
+  color: var(--c-muted);
+  font-size: 11px;
+  outline: none;
+}
+
 .compose-name {
   display: block;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
   height: 32px;
-  padding: 0 10px;
+  padding: 0;
   border: 0;
-  border-bottom: 1px solid var(--c-line);
   background: transparent;
   color: var(--c-text);
   font-size: 12px;
@@ -1306,6 +1536,74 @@ function placePreview(width, height, ready) {
   cursor: default;
 }
 
+/* 提示词类型筛选：胶囊 tabs，同时作为拖放目标 */
+.prompt-types {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 8px;
+  overflow-x: auto;
+}
+
+.prompt-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.prompt-type:hover {
+  color: var(--c-text);
+  border-color: var(--c-border-strong);
+}
+
+.prompt-type.is-active {
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+  background: var(--c-accent-weak);
+  color: var(--c-accent-ink);
+}
+
+/* 拖到胶囊上：实心高亮 + 外圈光环，避免和常态胶囊分不清 */
+.prompt-type.is-drop {
+  border-color: var(--c-accent);
+  border-style: solid;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  box-shadow: 0 0 0 3px var(--c-accent-weak);
+}
+
+.prompt-type.is-drop .prompt-type-count {
+  opacity: 0.9;
+}
+
+.prompt-type-count {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+/* 拖拽中：胶囊整体提亮，右侧给一行操作提示 */
+.library-panel.is-dragging .prompt-type {
+  border-color: var(--c-border-strong);
+  color: var(--c-text);
+}
+
+/* 悬停中的目标胶囊始终压过拖拽态的提亮 */
+.library-panel.is-dragging .prompt-type.is-drop {
+  border-color: var(--c-accent);
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+}
+
 .lib-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -1322,7 +1620,7 @@ function placePreview(width, height, ready) {
   border: 1px solid var(--c-line);
   border-radius: 10px;
   background: var(--c-surface);
-  cursor: pointer;
+  cursor: grab;
   transition: border-color 0.16s ease, background 0.16s ease;
 }
 
@@ -1331,13 +1629,55 @@ function placePreview(width, height, ready) {
   background: var(--c-surface-3);
 }
 
+.prompt-item.is-dragging {
+  opacity: 0.45;
+}
+
+/* 拖拽时的插入位置指示线 */
+.prompt-item.is-drop-before::before,
+.prompt-item.is-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--c-accent);
+}
+
+.prompt-item.is-drop-before::before {
+  top: -5px;
+}
+
+.prompt-item.is-drop-after::after {
+  bottom: -5px;
+}
+
 .prompt-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 4px;
   min-height: 18px;
 }
 
+/* 提示词类型角标 */
+.prompt-type-tag {
+  flex: 0 0 auto;
+  margin-left: auto;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--c-surface-3);
+  color: var(--c-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+
 .prompt-name {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 100%;
   padding: 0;
   border: 0;
@@ -1380,6 +1720,8 @@ function placePreview(width, height, ready) {
   word-break: break-word;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+  /* 双击条目会触发填节点/复制，避免顺手选中正文 */
+  user-select: none;
 }
 
 .item-del {

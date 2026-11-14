@@ -124,6 +124,64 @@
                 </svg>
                 <span>{{ comparing ? "退出对比" : "对比" }}</span>
               </button>
+
+              <!-- 预览工具：全屏 + 视频截帧，固定在工具栏底部 -->
+              <div v-if="mode === 'preview'" class="side-extra">
+                <button class="side-action" type="button" @click="previewRef?.toggleFullscreen()">
+                  <svg v-if="previewFullscreen" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path
+                      d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path
+                      d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span>{{ previewFullscreen ? "退出全屏" : "全屏预览" }}</span>
+                </button>
+
+                <template v-if="previewIsVideo">
+                  <button
+                    v-for="frame in FRAME_ACTIONS"
+                    :key="frame.key"
+                    class="side-action"
+                    type="button"
+                    :disabled="previewBusy"
+                    @click="previewRef?.exportFrame(frame.key)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <rect
+                        x="3"
+                        y="6"
+                        width="18"
+                        height="12"
+                        rx="2"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                      />
+                      <path
+                        d="M3 10h18M10 6v12"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                      />
+                    </svg>
+                    <span>{{ frame.label }}</span>
+                  </button>
+                </template>
+              </div>
             </div>
 
             <!-- 应用按钮同样由编辑器 Teleport 进来，沉底 -->
@@ -138,12 +196,15 @@
             <template v-if="showContent">
               <PreviewPane
                 v-if="mode === 'preview'"
+                ref="previewRef"
                 :item="current"
                 :media="media"
                 :index="index"
                 :upstream="upstreamFirst"
                 :comparing="comparing"
+                :text="resultText"
                 @select="emit('select', $event)"
+                @frame="onExportFrame"
               />
 
               <CropEditor
@@ -185,6 +246,8 @@
         </div>
       </div>
     </div>
+    <!-- 截帧导出结果提示：全屏预览时也要盖在上面 -->
+    <div v-if="notice" class="asset-notice">{{ notice }}</div>
   </Teleport>
 </template>
 
@@ -209,6 +272,43 @@ const props = defineProps({
 const emit = defineEmits(["select"]);
 
 const graph = inject("canvasGraph");
+
+// 预览工具栏：全屏与截帧按钮放在右侧工具栏，实际动作交给 PreviewPane
+const previewRef = ref(null);
+const previewFullscreen = computed(() => !!previewRef.value?.fullscreen);
+const previewBusy = computed(() => !!previewRef.value?.exporting);
+const previewIsVideo = computed(() => current.value?.kind === "video");
+const FRAME_ACTIONS = [
+  { key: "first", label: "导出首帧" },
+  { key: "current", label: "导出当前帧" },
+  { key: "last", label: "导出尾帧" },
+];
+
+// ------------------------------------------------------------ 视频截帧导出
+// 截出来的帧先上传成素材，再在源节点旁边建一个不连线的新节点，并给一条提示
+const notice = ref("");
+let noticeTimer = 0;
+
+function showNotice(text) {
+  notice.value = text;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => (notice.value = ""), 2600);
+}
+
+async function onExportFrame(payload) {
+  if (!payload || payload.error || !payload.blob) {
+    showNotice("截帧失败，请重试");
+    return;
+  }
+  try {
+    const item = await graph?.uploadAsset?.(payload.blob, payload.name);
+    if (!item) throw new Error("upload failed");
+    graph?.spawnDetachedNode?.(props.nodeId, [item]);
+    showNotice(`已导出为节点：${payload.name}`);
+  } catch {
+    showNotice("截帧失败，请重试");
+  }
+}
 
 const panelOpen = ref(false);
 
@@ -244,6 +344,11 @@ const mode = ref("preview");
 const gridMode = ref("split");
 const current = computed(() => props.media[props.index] || null);
 const isImage = computed(() => !!current.value && current.value.kind === "image");
+// 文本类工作流的产物：没有素材时预览面板展示全文
+const resultText = computed(() => {
+  const node = (graph?.nodes?.value || []).find((item) => item.id === props.nodeId);
+  return String(node?.data?.textResult || "");
+});
 
 // 对比：自身与上游都有素材，第一条类型一致（只支持图片/视频），
 // 且当前预览的必须是第一个素材
@@ -561,6 +666,21 @@ async function onMerge(blob, filename) {
   background: var(--c-backdrop);
 }
 
+/* 截帧结果提示：固定底部居中，层级高于全屏预览 */
+.asset-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 40px;
+  z-index: 2700;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-text) 88%, transparent);
+  color: var(--c-surface);
+  font-size: 12px;
+  pointer-events: none;
+}
+
 .asset-panel {
   position: relative;
   display: flex;
@@ -757,5 +877,39 @@ async function onMerge(blob, filename) {
 
 .side-apply.is-hidden {
   display: none;
+}
+
+/* 预览工具：全屏 + 截帧按钮，沉到工具栏底部 */
+.side-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.side-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 8px;
+  background: var(--c-surface-2);
+  color: var(--c-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.side-action:hover:not(:disabled) {
+  color: var(--c-accent);
+  border-color: var(--c-accent);
+}
+
+.side-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 </style>

@@ -5,8 +5,8 @@
     :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
-    @dragover.prevent.stop
-    @drop.prevent.stop
+    @dragover.prevent.stop="onNodeDragOver"
+    @drop.prevent.stop="onNodeDrop"
   >
     <!-- 标题在输入框上方，和参考图的文本节点一致 -->
     <div class="text-head">
@@ -87,7 +87,15 @@
       </div>
     </div>
 
-    <!-- 只保留右侧输出端口 -->
+    <!-- 左侧输入端口：承接上游产物（运行生成文本时自动连线），右侧是输出端口 -->
+    <Handle
+      type="target"
+      :position="Position.Left"
+      class="node-port"
+      :class="{ 'is-on': showInputPort, 'is-connected': inputConnected }"
+    >
+      <div class="port-hit" />
+    </Handle>
     <Handle
       type="source"
       :position="Position.Right"
@@ -102,7 +110,7 @@
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
-import { useLibrary } from "../../composables/useLibrary";
+import { useLibrary, PROMPT_DRAG_TYPE } from "../../composables/useLibrary";
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -140,6 +148,26 @@ async function beginEdit() {
 
 function endEdit() {
   editing.value = false;
+}
+
+// 从提示词面板拖进来：直接替换正文；图片等其它拖拽一律不发生
+function onNodeDragOver(event) {
+  const types = Array.from(event.dataTransfer?.types || []);
+  if (types.includes(PROMPT_DRAG_TYPE)) event.dataTransfer.dropEffect = "copy";
+}
+
+function onNodeDrop(event) {
+  const raw = event.dataTransfer?.getData(PROMPT_DRAG_TYPE);
+  if (!raw) return;
+  let text = "";
+  try {
+    text = (JSON.parse(raw)?.text || "").trim();
+  } catch {
+    return;
+  }
+  if (!text) return;
+  graph?.captureUndo?.(true);
+  props.data.text = text;
 }
 
 function onBodyKeyDown(event) {
@@ -233,6 +261,9 @@ const isConnectStart = computed(
   () => !!connectDirection.value && flow.connectionStartHandle.value?.nodeId === props.id
 );
 const outputConnected = computed(() => !!graph?.connectedSources?.value?.has(props.id));
+const inputConnected = computed(() => !!graph?.connectedTargets?.value?.has(props.id));
+// 左侧入口不参与手动接线：只有运行产物自动连上时才露出灰色小圆点
+const showInputPort = computed(() => inputConnected.value);
 const showOutputPort = computed(() => {
   if (connectDirection.value) {
     return connectDirection.value === "target" || isConnectStart.value;
@@ -392,6 +423,10 @@ function stopResize() {
   clip-path: inset(0 0 0 50%);
 }
 
+.vue-flow__handle-left.node-port::before {
+  clip-path: inset(0 50% 0 0);
+}
+
 .port-hit {
   position: absolute;
   left: 50%;
@@ -400,6 +435,11 @@ function stopResize() {
   height: 72px;
   transform: translate(-50%, -50%) translateX(20px);
   pointer-events: none;
+}
+
+/* 左侧入口的热区朝左延伸 */
+.vue-flow__handle-left.node-port .port-hit {
+  transform: translate(-50%, -50%) translateX(-20px);
 }
 
 .vue-flow__handle.node-port.is-on .port-hit,
@@ -423,6 +463,32 @@ function stopResize() {
 
 .text-node.is-connecting .vue-flow__handle.node-port.is-on .port-hit {
   pointer-events: all;
+}
+
+/* 左侧入口只是“运行产物来源”标记：灰点、不可交互，只在已有连线时出现 */
+.vue-flow__handle-left.node-port,
+.text-node:hover .vue-flow__handle-left.node-port,
+.text-node.is-connecting .vue-flow__handle-left.node-port {
+  opacity: 0;
+}
+
+.vue-flow__handle-left.node-port.is-connected,
+.text-node:hover .vue-flow__handle-left.node-port.is-connected,
+.text-node.is-connecting .vue-flow__handle-left.node-port.is-connected {
+  opacity: 1;
+}
+
+/* 左侧入口：和右侧输出口同款半圆，只是用灰色表示“自动连接” */
+.vue-flow__handle-left.node-port::before {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--c-muted);
+  clip-path: inset(0 50% 0 0);
+}
+
+.vue-flow__handle-left.node-port .port-hit {
+  display: none;
 }
 
 /* 删除按钮 / 缩放柄：样式与位置和普通节点保持一致 */

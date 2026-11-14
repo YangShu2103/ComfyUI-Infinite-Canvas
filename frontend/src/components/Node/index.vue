@@ -133,6 +133,19 @@
         />
       </div>
     </div>
+    <!-- 仅预处理派发的子节点保留文本展示（普通节点遇到文本产物会直接变成文本节点） -->
+    <div
+      v-else-if="!culled && !showProgress && data.fromPreprocess && data.textResult"
+      class="node-empty is-text"
+      title="双击查看完整文本"
+      @dblclick.stop="openTextPreview"
+    >
+      <div class="node-text-result">
+        <span class="node-text-label">文本结果</span>
+        <p class="node-text-body">{{ data.textResult }}</p>
+        <span class="node-text-hint">双击查看完整文本</span>
+      </div>
+    </div>
     <div v-else-if="!culled && !showProgress" class="node-empty">
       <!-- 只有这块虚线区域是上传热区，点节点其他地方只做选中/展开面板 -->
       <button
@@ -812,6 +825,11 @@ function openPreviewPanel(i) {
   actionsRef.value?.openPreviewPanel();
 }
 
+// 文本类产物：双击节点打开预览面板看全文
+function openTextPreview() {
+  actionsRef.value?.openPreviewPanel();
+}
+
 // 堆叠定位：当前卡片居中，左右相邻卡片向两侧错开并缩小
 function cardStyle(i) {
   const offset = i - index.value;
@@ -1433,7 +1451,8 @@ const promptDraft = ref("");
 const promptEl = ref(null);
 
 // 提示词框的插入目标：面板展开的节点都能接收，多选时一次写给所有节点
-const { open: openLibrary, registerTarget, unregisterTarget } = useLibrary();
+const { open: openLibrary, registerTarget, unregisterTarget, registerReplace, unregisterReplace } =
+  useLibrary();
 
 function promptText() {
   return promptField.value ? valueOf(promptField.value) : promptDraft.value;
@@ -1462,6 +1481,17 @@ watch(
 );
 
 onBeforeUnmount(() => unregisterTarget(props.id));
+
+// 从提示词面板拖到节点上：整体替换提示词。
+// 字段解析复用节点自己的逻辑，没暴露文本字段时落到草稿里
+function replacePrompt(text) {
+  graph?.captureUndo?.(true);
+  if (promptField.value) setValue(promptField.value, text, false);
+  else promptDraft.value = text;
+}
+
+onMounted(() => registerReplace(props.id, replacePrompt));
+onBeforeUnmount(() => unregisterReplace(props.id));
 
 function insertIntoPrompt(text, useCaret = false) {
   const el = promptEl.value;
@@ -1946,6 +1976,54 @@ async function run() {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 文本类工作流的结果：节点里直接显示前几行，双击看全文 */
+.node-empty.is-text {
+  padding: 8px 10px;
+  align-items: stretch;
+  cursor: zoom-in;
+}
+
+.node-text-result {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  background: var(--c-input-bg);
+  overflow: hidden;
+}
+
+.node-text-label {
+  flex: 0 0 auto;
+  color: var(--c-muted);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.node-text-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  color: var(--c-text);
+  font-size: 11px;
+  line-height: 1.7;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.node-text-hint {
+  flex: 0 0 auto;
+  color: var(--c-muted);
+  font-size: 10px;
 }
 
 .node-upload {

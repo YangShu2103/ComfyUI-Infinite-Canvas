@@ -326,6 +326,34 @@ export function useGraph() {
     return id;
   }
 
+  // 从提示词面板拖到画布空白处：在落点新建文本节点并写入内容
+  function spawnPromptNodeAt(text, clientX, clientY) {
+    const point = flow.screenToFlowCoordinate({ x: clientX, y: clientY });
+    const id = spawnPromptNode(point);
+    const node = flow.findNode(id);
+    if (node) node.data.text = text || "";
+    return id;
+  }
+
+  // 把一条提示词写进节点：文本节点直接替换正文，普通节点写进工作流的提示词字段
+  // 字段定义不在节点数据里（由每个节点自己按工作流拉取），这里走同一份缓存
+  async function setNodePrompt(nodeId, text) {
+    const node = flow.findNode(nodeId);
+    if (!node || !text) return false;
+    if (node.type === "text") {
+      node.data.text = text;
+      return true;
+    }
+    if (node.type !== "demo") return false;
+    const fields = await fetchWorkflowFields(node.data.workflow);
+    const field = fields.find((item) => item.type === "textarea" || item.type === "text");
+    if (!field) return false;
+    const params = { ...(node.data.params || {}) };
+    params[field.nodeId] = { ...(params[field.nodeId] || {}), [field.key]: text };
+    node.data.params = params;
+    return true;
+  }
+
   // 右键菜单「预处理」：在鼠标位置创建预处理节点
   function spawnPreprocessNode(position) {
     captureUndo(true);
@@ -1238,6 +1266,10 @@ export function useGraph() {
   }
 
   function onConnect(connection) {
+    // 文本节点的入口只用于展示“运行产物来源”，不允许手动接线
+    const targetNode = nodes.value.find((node) => node.id === connection.target);
+    if (targetNode?.type === "text") return;
+
     justConnected = true;
     captureUndo(true);
     addEdge(
@@ -1268,6 +1300,12 @@ export function useGraph() {
     const node = nodeId && nodeId !== start.nodeId ? flow.findNode(nodeId) : null;
     const size = node?.dimensions;
     if (!node || !size?.width || !size?.height) {
+      connectSnap.value = null;
+      return;
+    }
+
+    // 文本节点不接受手动连线：拉线经过时既不吸附，也不显示预览线
+    if (start.type === "source" && node.type === "text") {
       connectSnap.value = null;
       return;
     }
@@ -1998,7 +2036,35 @@ export function useGraph() {
     }, 4000);
   }
 
-  function finishPrompt(nodeId, promptId, images) {
+  // 文本产物：普通节点直接原地变成文本节点（保留 id、位置和已有连线），
+  // 不再额外生成一个新节点；预处理派发的子节点由预处理逻辑管理，只记结果不换类型
+  function convertNodeToText(nodeId, text) {
+    const node = nodes.value.find((item) => item.id === nodeId);
+    if (!node) return null;
+
+    if (node.data?.fromPreprocess) {
+      node.data.textResult = text;
+      return node.id;
+    }
+
+    const replacement = {
+      id: node.id,
+      type: "text",
+      position: { ...node.position },
+      selected: node.selected,
+      data: {
+        ...baseData("文本节点"),
+        workflow: "",
+        text,
+        w: PROMPT_WIDTH,
+        h: PROMPT_HEIGHT,
+      },
+    };
+    nodes.value = nodes.value.map((item) => (item.id === node.id ? replacement : item));
+    return replacement.id;
+  }
+
+  function finishPrompt(nodeId, promptId, images, texts) {
     if (settledPrompts.has(promptId)) return;
     settledPrompts.add(promptId);
     stopPolling(promptId);
@@ -2008,9 +2074,23 @@ export function useGraph() {
 
     const state = runStates[nodeId];
     const items = itemsFromRefs(images);
+    const text = (texts || [])
+      .filter((value) => typeof value === "string" && value.trim())
+      .join("\n\n");
+    const target = nodes.value.find((item) => item.id === nodeId);
+
+    if (text) {
+      if (items.length) {
+        // 同时有素材和文本：素材照常进节点，文本只留档
+        if (target) target.data.textResult = text;
+      } else {
+        // 纯文本产物：节点本身改成文本节点
+        convertNodeToText(nodeId, text);
+      }
+    }
+
     if (items.length) {
       // 分镜节点是原地重跑：新产物替换上一次的产物，避免节点素材无限累积
-      const target = nodes.value.find((item) => item.id === nodeId);
       if (target?.data?.fromPreprocess) {
         target.data.media = items;
         target.data.index = 0;
@@ -2018,6 +2098,9 @@ export function useGraph() {
       } else {
         appendItems(nodeId, items);
       }
+    }
+
+    if (items.length || text) {
       if (state) state.status = "done";
       notifyDone();
     } else if (state) {
@@ -2052,7 +2135,7 @@ export function useGraph() {
       }
       return;
     }
-    finishPrompt(nodeId, promptId, data.images || []);
+    finishPrompt(nodeId, promptId, data.images || [], data.texts || []);
   }
 
   // 素材还在上传时，下游节点先以 uploading 状态占位；上传落定后由 trackPrompt 接管
@@ -2881,6 +2964,8 @@ export function useGraph() {
     spawnChildNode,
     spawnPreprocessNode,
     spawnPromptNode,
+    spawnPromptNodeAt,
+    setNodePrompt,
     runPreprocess,
     cancelPreprocess,
     createShot,

@@ -95,10 +95,12 @@ import LibraryDock from "./components/LibraryDock.vue";
 import { dialogs, openDialog, closeAllDialogs } from "./stores/dialogs.js";
 import { useGraph } from "./composables/useGraph.js";
 import { useCanvas } from "./composables/useCanvas.js";
-import { FILE_ASSET_DRAG_TYPE } from "./composables/useLibrary.js";
+import { FILE_ASSET_DRAG_TYPE, PROMPT_DRAG_TYPE, useLibrary } from "./composables/useLibrary.js";
 import { useTheme } from "./composables/useTheme.js";
 
 const { canvasGridColor } = useTheme();
+// 拖提示词落到普通节点：优先交给节点自己的替换通道（和双击写提示词同一条路）
+const { replacePromptText } = useLibrary();
 
 // ---------------------------------------------------------------- 连接预览线吸附
 // 拉线时整块节点都是连接热区，所以预览线也要吸到节点的默认端口（左入 / 右出），
@@ -162,6 +164,8 @@ const {
   duplicateNode,
   spawnMediaNodeAt,
   spawnItemsNodeAt,
+  spawnPromptNodeAt,
+  setNodePrompt,
   itemsFromRefs,
   setPastePointer,
   clearPastePointer,
@@ -590,7 +594,16 @@ function hasAsset(event) {
   return types.includes(ASSET_DRAG_TYPE) || types.includes(FILE_ASSET_DRAG_TYPE);
 }
 
+function hasPrompt(event) {
+  if (!event.dataTransfer) return false;
+  return Array.from(event.dataTransfer.types || []).includes(PROMPT_DRAG_TYPE);
+}
+
 function onDragOver(event) {
+  if (hasPrompt(event)) {
+    event.dataTransfer.dropEffect = "copy";
+    return;
+  }
   if (hasAsset(event)) {
     event.dataTransfer.dropEffect = "copy";
     return;
@@ -611,6 +624,31 @@ async function onDrop(event) {
 
   // 落在右上角面板上不算画布操作
   if (event.target instanceof Element && event.target.closest(".library-dock")) return;
+
+  // 从提示词面板拖出来的提示词：落在节点上替换它的提示词，落在空白处新建文本节点
+  const promptRaw = event.dataTransfer?.getData(PROMPT_DRAG_TYPE);
+  if (promptRaw) {
+    let text = "";
+    try {
+      text = (JSON.parse(promptRaw)?.text || "").trim();
+    } catch {
+      return;
+    }
+    if (!text) return;
+    const promptTargetEl =
+      event.target instanceof Element ? event.target.closest(".vue-flow__node") : null;
+    const promptTargetId = promptTargetEl?.dataset.id;
+    if (promptTargetId) {
+      // 节点在线时由它自己写（含没有文本字段时落到草稿）；未登记时退回字段缓存
+      if (!replacePromptText(promptTargetId, text)) {
+        captureUndo(true);
+        await setNodePrompt(promptTargetId, text);
+      }
+      return;
+    }
+    spawnPromptNodeAt(text, event.clientX, event.clientY);
+    return;
+  }
 
   // 从节点媒体条拖出来的素材：落在画布空白处新建一个节点；
   // 落在节点/面板上不处理（面板内部那一下是排序）

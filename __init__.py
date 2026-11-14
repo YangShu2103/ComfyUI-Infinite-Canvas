@@ -206,6 +206,16 @@ def _save_workflow(name, workflow):
 # ---------------------------------------------------------------- 提示词库
 # 手动收藏的提示词独立存一个 prompts.json，与画布设置分开，避免互相覆盖
 
+# 提示词类型：目前固定三种；老数据没有 type 时按「通用」处理
+PROMPT_TYPES = ("通用", "风格模块", "反推模版")
+DEFAULT_PROMPT_TYPE = "通用"
+
+
+def _prompt_type(value):
+    value = str(value or "").strip()
+    return value if value in PROMPT_TYPES else DEFAULT_PROMPT_TYPE
+
+
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 _VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v")
 _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
@@ -247,6 +257,7 @@ def _load_prompt_library():
                 "id": str(entry.get("id") or uuid.uuid4().hex),
                 "name": str(entry.get("name", "") or "").strip(),
                 "text": text,
+                "type": _prompt_type(entry.get("type")),
                 "created": int(entry.get("created") or 0),
             }
         )
@@ -1193,6 +1204,40 @@ def _collect_outputs(outputs):
     return result
 
 
+def _collect_texts(outputs):
+    """收集文本类产物（SaveText 等节点）：返回按节点顺序去重后的文本列表
+
+    ComfyUI 里文本产物可能挂在 outputs[节点] 的 text / ui.text 上，
+    值可能是字符串，也可能是字符串数组，这里都摊平。
+    """
+    texts = []
+    seen = set()
+
+    def push(value):
+        if isinstance(value, str):
+            items = [value]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return
+        for item in items:
+            if not isinstance(item, str) or not item.strip() or item in seen:
+                continue
+            seen.add(item)
+            texts.append(item)
+
+    for node_output in (outputs or {}).values():
+        if not isinstance(node_output, dict):
+            continue
+        for key in ("text", "texts", "string", "strings"):
+            push(node_output.get(key))
+        ui = node_output.get("ui")
+        if isinstance(ui, dict):
+            for key in ("text", "texts", "string"):
+                push(ui.get(key))
+    return texts
+
+
 # ---------------------------------------------------------------- 路由注册
 
 def register_routes(app):
@@ -1401,6 +1446,7 @@ def register_routes(app):
         if not text:
             return web.json_response({"error": "提示词不能为空"}, status=400)
         name = str(payload.get("name", "") or "").strip()[:60]
+        entry_type = _prompt_type(payload.get("type"))
 
         items = _load_prompt_library()
         # 已收藏过同样的内容就不再重复添加
@@ -1411,6 +1457,7 @@ def register_routes(app):
                     "id": uuid.uuid4().hex,
                     "name": name,
                     "text": text,
+                    "type": entry_type,
                     "created": int(time.time()),
                 },
             )
@@ -1423,12 +1470,31 @@ def register_routes(app):
             payload = await request.json()
         except Exception:
             return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
-        name = str(payload.get("name", "") or "").strip()[:60]
         items = _load_prompt_library()
         for item in items:
-            if item["id"] == entry_id:
-                item["name"] = name
-                break
+            if item["id"] != entry_id:
+                continue
+            if "name" in payload:
+                item["name"] = str(payload.get("name", "") or "").strip()[:60]
+            if "type" in payload:
+                item["type"] = _prompt_type(payload.get("type"))
+            break
+        _save_prompt_library(items)
+        return web.json_response({"prompts": items})
+
+    async def reorder_prompts(request):
+        """按前端拖拽后的 id 顺序重排提示词"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+        ids = payload.get("ids")
+        if not isinstance(ids, list):
+            return web.json_response({"error": "缺少 ids"}, status=400)
+        order = {str(entry_id): index for index, entry_id in enumerate(ids)}
+        items = _load_prompt_library()
+        # 没出现在 ids 里的旧条目保持相对顺序排在最后
+        items.sort(key=lambda item: order.get(item["id"], len(order)))
         _save_prompt_library(items)
         return web.json_response({"prompts": items})
 
@@ -1737,7 +1803,8 @@ def register_routes(app):
             return web.json_response({"status": "running"})
 
         images = _collect_outputs(result.get("outputs"))
-        return web.json_response({"status": "done", "images": images})
+        texts = _collect_texts(result.get("outputs"))
+        return web.json_response({"status": "done", "images": images, "texts": texts})
 
     async def abort_prompt(request):
         """运行中的任务用 /interrupt 取消，排队中的任务直接从 /queue 删掉"""
@@ -1856,6 +1923,7 @@ def register_routes(app):
             web.post(f"{API_PREFIX}/library/delete", delete_assets),
             web.get(f"{API_PREFIX}/library/prompts", list_prompts),
             web.post(f"{API_PREFIX}/library/prompts", add_prompt),
+            web.post(f"{API_PREFIX}/library/prompts/order", reorder_prompts),
             web.patch(f"{API_PREFIX}/library/prompts/{{entry_id}}", rename_prompt),
             web.delete(f"{API_PREFIX}/library/prompts/{{entry_id}}", delete_prompt),
             web.get(f"{API_PREFIX}/workflows/{{name}}", get_workflow),
