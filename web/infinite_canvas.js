@@ -7,6 +7,9 @@ const LOG = "[Infinite-Canvas]";
 const READY_FLAG = "__INFINITE_CANVAS_READY__";
 
 const LABEL = "Infinite-Canvas";
+// ComfyUI 设置面板里的入口开关（默认显示）
+const SETTING_ID = "InfiniteCanvas.ShowEntry";
+const SETTING_LABEL = "Show Infinite-Canvas Entry";
 // 入口位置记忆（拖拽后可移动）
 const POS_KEY = "infinite-canvas-fab-pos";
 const POS_API = "/infinite_canvas/api/fab-position";
@@ -163,6 +166,44 @@ async function resolvePageUrl() {
   }
   resolvedPageUrl = PAGE_CANDIDATES[0];
   return resolvedPageUrl;
+}
+
+// ---- 入口开关 ----
+
+// 新版前端走 extensionManager，旧版走 app.ui.settings，都取不到时按默认显示
+function entryEnabled() {
+  try {
+    const value = app.extensionManager?.setting?.get?.(SETTING_ID);
+    if (typeof value === "boolean") return value;
+  } catch {
+    // 新版接口不可用，继续尝试旧接口
+  }
+  try {
+    const value = app.ui?.settings?.getSettingValue?.(SETTING_ID, true);
+    if (typeof value === "boolean") return value;
+  } catch {
+    // 旧接口也不可用时按默认显示
+  }
+  return true;
+}
+
+function registerSetting() {
+  try {
+    app.ui?.settings?.addSetting?.({
+      id: SETTING_ID,
+      name: SETTING_LABEL,
+      type: "boolean",
+      defaultValue: true,
+      tooltip: "关闭后隐藏页面右侧的画布入口，可在此（设置 → 其他）重新打开",
+      onChange(value) {
+        if (value) mountButton();
+        else unmountButton();
+      },
+    });
+  } catch (err) {
+    // 注册失败不影响入口本身，只是设置面板里没有这个开关
+    console.warn(LOG, "注册设置项失败", err);
+  }
 }
 
 // ---- 悬浮入口 ----
@@ -345,6 +386,13 @@ function mountButton() {
   return true;
 }
 
+// 关掉开关时只移除入口，已经打开的画布保持原样
+function unmountButton() {
+  if (!buttonEl) return;
+  buttonEl.remove();
+  buttonEl = null;
+}
+
 function onKeyDown(e) {
   if (e.key === "Escape") closeModal();
 }
@@ -361,7 +409,8 @@ app.registerExtension({
     window[READY_FLAG] = true;
 
     injectStyles();
-    mountButton();
+    registerSetting();
+    if (entryEnabled()) mountButton();
     document.addEventListener("keydown", onKeyDown);
 
     // 窗口尺寸变化后把按钮拉回可视范围内（保留用户保存的位置，仅本次夹紧）
@@ -369,8 +418,12 @@ app.registerExtension({
       if (buttonEl?.isConnected) applyPosition(currentPosition());
     });
 
-    // 低频看门狗：前端重渲染把按钮移除时才补回
+    // 低频看门狗：前端重渲染把按钮移除时才补回；开关关闭时不再挂载
     setInterval(() => {
+      if (!entryEnabled()) {
+        if (buttonEl?.isConnected) unmountButton();
+        return;
+      }
       if (!buttonEl?.isConnected) mountButton();
     }, 5000);
 
