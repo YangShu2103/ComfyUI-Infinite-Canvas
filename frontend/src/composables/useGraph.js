@@ -2203,11 +2203,8 @@ export function useGraph() {
     ensureSocket();
 
     const timer = setInterval(() => {
-      // 超过 30 分钟视为异常，避免无限挂起
-      if (Date.now() - startedAt > 30 * 60 * 1000) {
-        failPrompt(nodeId, promptId, "等待超时，任务可能仍在执行");
-        return;
-      }
+      // 不设超时：视频类任务可能跑一两个小时，只有 ComfyUI 明确返回结果才收尾，
+      // 真要停就点【取消运行】，避免长任务被误判失败
       checkPrompt(nodeId, promptId);
     }, 2500);
     pollers.set(promptId, timer);
@@ -2619,18 +2616,18 @@ export function useGraph() {
   }
 
   // 上游没结束就先挂"等待中"，等全部空闲再提交（和画布上手动点运行的等待流程一致）。
-  // 返回 false 表示等待期间被中断 / 节点被删，这次不再提交
-  async function waitUpstreamsFree(nodeId, timeoutMs = 30 * 60 * 1000) {
+  // 返回 false 表示等待期间被中断 / 节点被删，这次不再提交。
+  // 不设超时：上游可能是跑两小时的视频任务，提前放开会让下游拿不到它的产物
+  async function waitUpstreamsFree(nodeId) {
     if (!busyUpstreamsOf(nodeId).length) return true;
     markWaiting(nodeId);
-    const startedAt = Date.now();
     return new Promise((resolve) => {
       const timer = setInterval(() => {
         const gone = !flow.findNode(nodeId);
         // 等待期间被手动中断：等待状态已被清掉，直接放弃这次提交
         const cancelled = runStates[nodeId]?.status !== "waiting";
         const idle = !busyUpstreamsOf(nodeId).length;
-        if (gone || cancelled || idle || Date.now() - startedAt > timeoutMs) {
+        if (gone || cancelled || idle) {
           clearInterval(timer);
           resolve(!cancelled);
         }
@@ -2640,8 +2637,9 @@ export function useGraph() {
 
   // 跑一个分镜节点：分镜素材是它的上游素材（inputMedia），节点直接提交自己的工作流，
   // 产物回填到它自己；不再派生中间节点。预处理节点最多有几十个分镜，
-  // 所以直接在这里提交，不依赖节点组件是否在视口内渲染
-  async function runShotNode(nodeId) {
+  // 所以直接在这里提交，不依赖节点组件是否在视口内渲染。
+  // gate：本轮上一个任务的提交 Promise，用来保证提交顺序和任务顺序一致
+  async function runShotNode(nodeId, gate = null) {
     const node = flow.findNode(nodeId);
     if (!node) return;
     const workflow = node.data.workflow;
@@ -2651,6 +2649,10 @@ export function useGraph() {
       // 勾了"等待上一个分镜"的分镜节点会有一条来自上一分镜的连线：
       // 上游还在跑就先进入等待态，跑完再拿它的产物提交
       if (!(await waitUpstreamsFree(nodeId))) return;
+      if (!flow.findNode(nodeId)) return;
+
+      // 等上一个任务真正提交出去再提交自己，避免字段请求慢的任务被后面的插队
+      if (gate) await gate;
       if (!flow.findNode(nodeId)) return;
 
       const media = node.data.inputMedia || [];
@@ -2692,9 +2694,10 @@ export function useGraph() {
     }
   }
 
-  // 派发一个分镜（不阻塞），Promise 存起来供等待开关使用
-  function dispatchShot(nodeId) {
-    const running = runShotNode(nodeId);
+  // 派发一个分镜（不阻塞），Promise 存起来供等待开关使用。
+  // 必须在派发循环里同步调用：继承任务判断上游是否在忙，靠的就是这里的登记
+  function dispatchShot(nodeId, gate = null) {
+    const running = runShotNode(nodeId, gate);
     shotRuns.set(nodeId, running);
     running
       .catch(() => {})
@@ -2704,8 +2707,9 @@ export function useGraph() {
     return running;
   }
 
-  // 等分镜这一轮真正跑完：先等提交，再等节点自身的运行态结束
-  async function waitShotSettled(nodeId, timeoutMs = 30 * 60 * 1000) {
+  // 等分镜这一轮真正跑完：先等提交，再等节点自身的运行态结束。
+  // 不设超时，长任务（视频类）跑多久就等多久，取消时状态会被清掉自然退出
+  async function waitShotSettled(nodeId) {
     const running = shotRuns.get(nodeId);
     if (running) {
       try {
@@ -2716,12 +2720,11 @@ export function useGraph() {
     }
     if (!flow.findNode(nodeId)) return;
 
-    const startedAt = Date.now();
     const isActive = () => {
       const state = runStates[nodeId];
       return !!state && ["uploading", "waiting", "queued", "running"].includes(state.status);
     };
-    while (isActive() && Date.now() - startedAt < timeoutMs) {
+    while (isActive()) {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }
@@ -2781,20 +2784,25 @@ export function useGraph() {
       const exists = edges.value.some(
         (edge) => edge.source === sourceId && edge.target === targetId
       );
-      if (exists) continue;
-      edgeSeq += 1;
-      edges.value = [
-        ...edges.value,
-        {
-          id: `e${edgeSeq}`,
-          type: "canvas",
-          source: sourceId,
-          sourceHandle: null,
-          target: targetId,
-          targetHandle: null,
-          data: { wait: true },
-        },
-      ];
+      if (!exists) {
+        edgeSeq += 1;
+        edges.value = [
+          ...edges.value,
+          {
+            id: `e${edgeSeq}`,
+            type: "canvas",
+            source: sourceId,
+            sourceHandle: null,
+            target: targetId,
+            targetHandle: null,
+            data: { wait: true },
+          },
+        ];
+      }
+      // 继承：把上一个任务节点的当前产物挂进下游节点的上游素材。
+      // 这里直接写 edges 绕过了画布的连线继承逻辑，必须手动补一次，
+      // 否则继承的分镜（比如前两个任务已锁定、后加的任务）提交时拿不到上游产物
+      inheritMedia(sourceId, targetId);
     }
   }
 
@@ -2892,12 +2900,20 @@ export function useGraph() {
 
       let failedMessage = "";
       let sentCount = 0;
+      // 提交顺序跟任务顺序一致：没勾「继承」的任务依次提交上一个的提交完成；
+      // 勾了继承的任务本来就自己等上游，不占这条链，避免把后面的任务堵住。
+      // 注意这里必须同步派发所有任务，继承任务要靠 shotRuns 判断上游是否在忙
+      let submitGate = Promise.resolve();
       for (const entry of active) {
         if (isCancelled()) return;
         if (!flow.findNode(entry.id)) continue;
         sentCount += 1;
         setPreprocessState(nodeId, { sent: sentCount });
-        dispatchShot(entry.id).catch((error) => {
+        const running = entry.wait
+          ? dispatchShot(entry.id)
+          : dispatchShot(entry.id, submitGate);
+        if (!entry.wait) submitGate = running.catch(() => {});
+        running.catch((error) => {
           if (isCancelled()) return;
           if (!failedMessage) {
             failedMessage = (error && error.message) || "运行失败";

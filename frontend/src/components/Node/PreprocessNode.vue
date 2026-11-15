@@ -654,6 +654,11 @@ function toggleShotLock(shot) {
   );
 }
 
+// 传播 / 继承时复制一份素材数组，条目各自独立（上传落定时按 id 同步各个副本）
+function shotMediaCopy(shot) {
+  return (shot.media || []).map((item) => ({ ...item }));
+}
+
 function addShot() {
   graph?.captureUndo?.(true);
   replaceShots([...shots.value, graph.createShot()]);
@@ -667,6 +672,22 @@ function removeShot(index) {
 
 function toggleWait(shot, value) {
   graph?.captureUndo?.(true);
+  const index = shots.value.findIndex((item) => item.id === shot.id);
+  const prev = index > 0 ? shots.value[index - 1] : null;
+  // 打开继承：顺带把上方任务的素材 / 工作流 / 参数同步过来，省得重新配一遍。
+  // 提示词不动；上方任务没有素材时保留当前素材，避免把已有素材清空
+  if (value && prev) {
+    const media = shotMediaCopy(prev);
+    updateShot(shot.id, {
+      wait: true,
+      workflow: prev.workflow,
+      params: { ...prev.params },
+      randomFields: { ...prev.randomFields },
+      ...(media.length ? { media } : {}),
+    });
+    ensureFields(prev.workflow);
+    return;
+  }
   updateShot(shot.id, { wait: value });
 }
 
@@ -824,13 +845,15 @@ function pickWorkflow(shot, name) {
   ensureFields(name);
 }
 
-// 传播工作流与参数（不含提示词）：all=true 全部分镜，否则只影响紧邻的下一个分镜
+// 传播素材、工作流与参数（不含提示词）：all=true 全部分镜，否则只影响紧邻的下一个分镜
 function propagateShot(shot, all) {
   const index = shots.value.findIndex((item) => item.id === shot.id);
   if (index < 0) return;
   if (!all && index >= shots.value.length - 1) return;
   if (all && shots.value.length < 2) return;
   graph?.captureUndo?.(true);
+  // 当前任务没有素材时不动目标任务的素材，避免把已有素材清空
+  const media = shotMediaCopy(shot);
   const next = shots.value.map((entry, i) => {
     if (entry.id === shot.id) return entry;
     if (!all && i !== index + 1) return entry;
@@ -839,7 +862,8 @@ function propagateShot(shot, all) {
       workflow: shot.workflow,
       params: { ...shot.params },
       randomFields: { ...shot.randomFields },
-      // 工作流 / 参数被覆盖，已锁定的任务自动解锁
+      ...(media.length ? { media } : {}),
+      // 工作流 / 参数 / 素材被覆盖，已锁定的任务自动解锁
       locked: false,
     };
   });

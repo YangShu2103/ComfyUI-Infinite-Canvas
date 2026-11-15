@@ -1619,17 +1619,17 @@ function busyUpstreamIds() {
   return upstream.filter((id) => graph.nodeBusy?.(id));
 }
 
-// 轮询等上游全部结束；上游节点被删、超时、或被手动中断都会放开，避免一直卡住
-function waitUpstreamsIdle(targetId, timeoutMs = 30 * 60 * 1000) {
+// 轮询等上游全部结束；上游节点被删或被手动中断都会放开，避免一直卡住。
+// 不设超时：上游可能是跑一两个小时的视频任务，提前放开会让下游拿不到它的产物
+function waitUpstreamsIdle(targetId) {
   if (!busyUpstreamIds().length) return Promise.resolve();
-  const startedAt = Date.now();
   return new Promise((resolve) => {
     const timer = setInterval(() => {
       const gone = !flow.nodes.value.some((node) => node.id === targetId);
       // 等待期间被手动中断：等待状态已被清掉，直接放弃这次提交
       const cancelled = graph.runStates?.[targetId]?.status !== "waiting";
       const idle = !busyUpstreamIds().length;
-      if (gone || cancelled || idle || Date.now() - startedAt > timeoutMs) {
+      if (gone || cancelled || idle) {
         clearInterval(timer);
         resolve();
       }
