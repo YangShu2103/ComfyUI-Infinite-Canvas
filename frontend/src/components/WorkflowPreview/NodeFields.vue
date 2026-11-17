@@ -82,8 +82,17 @@
               </label>
             </div>
 
+            <div v-if="isSingleMedia(entry.type)" class="nf-row">
+              <select v-model="entry.mediaIndex" class="nf-select nf-select-wide">
+                <option value="">自动（按节点编号顺序）</option>
+                <option v-for="n in MEDIA_INDEX_MAX" :key="n" :value="n - 1">
+                  第 {{ n }} {{ MEDIA_UNITS[entry.type] }}
+                </option>
+              </select>
+            </div>
+
             <div v-if="isMediaType(entry.type)" class="nf-note">
-              运行时自动取节点上的{{ MEDIA_LABELS[entry.type] }}，优先上游、其次自身，这里不用填。
+              运行时自动取节点上的{{ MEDIA_LABELS[entry.type] }}，优先上游、其次自身，这里不用填{{ isSingleMedia(entry.type) ? "；也可在上方指定第几个" : "" }}。
             </div>
           </div>
         </div>
@@ -136,8 +145,16 @@ const MEDIA_LABELS = {
   video: "第一个视频",
 };
 
+// 单张媒体字段可以指定序号（0 起）；"自动" 时按节点编号升序领取
+const MEDIA_INDEX_MAX = 8;
+const MEDIA_UNITS = { image: "张", audio: "个", video: "个" };
+
 function isMediaType(type) {
   return !!MEDIA_LABELS[type];
+}
+
+function isSingleMedia(type) {
+  return type === "image" || type === "audio" || type === "video";
 }
 
 const entries = ref([]);
@@ -182,6 +199,7 @@ function buildEntries() {
       min: field?.min ?? "",
       max: field?.max ?? "",
       step: field?.step ?? "",
+      mediaIndex: Number.isInteger(field?.mediaIndex) ? field.mediaIndex : "",
       defaultText: preview(value),
     });
   }
@@ -225,6 +243,11 @@ function collect() {
         if (min !== undefined) field.min = min;
         if (max !== undefined) field.max = max;
         if (step !== undefined) field.step = step;
+      }
+      // 指定序号只在"非自动"时写入；自动由运行时的节点编号顺序决定
+      if (isSingleMedia(entry.type)) {
+        const index = toNum(entry.mediaIndex);
+        if (index !== undefined) field.mediaIndex = index;
       }
       return field;
     });
@@ -429,6 +452,10 @@ function close() {
 
 .nf-select {
   flex: 0 0 108px;
+}
+
+.nf-select-wide {
+  flex: 1 1 auto;
 }
 
 .nf-input {

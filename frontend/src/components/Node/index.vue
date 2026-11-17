@@ -1579,13 +1579,54 @@ function defaultValueOf(field) {
   return field.default === undefined || field.default === null ? "" : field.default;
 }
 
-// 实际提交给工作流的值：媒体字段从节点素材解析，随机字段按模式生成
-function resolveValue(field) {
+// 节点 id 形如 "46" / "500:13"，按数字段比较，避免 "100" 排在 "46" 前面
+function compareNodeId(a, b) {
+  const parts = (value) =>
+    String(value)
+      .split(":")
+      .map((part) => {
+        const n = Number(part);
+        return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+      });
+  const left = parts(a);
+  const right = parts(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? -1) - (right[i] ?? -1);
+    if (diff) return diff;
+  }
+  return String(a).localeCompare(String(b));
+}
+
+// 单张媒体字段按节点编号升序领取素材：与 fields.json 的数组顺序无关，
+// 重新启用 / 修改某个字段都不会让它跑到别的位置
+function buildMediaRanks(list) {
+  const ranks = new Map();
+  ["image", "audio", "video"].forEach((type) => {
+    list
+      .filter((field) => field.type === type)
+      .slice()
+      .sort((a, b) => compareNodeId(a.nodeId, b.nodeId))
+      .forEach((field, index) => {
+        ranks.set(`${type}:${field.nodeId}:${field.key}`, index);
+      });
+  });
+  return ranks;
+}
+
+// 实际提交给工作流的值：媒体字段从节点素材解析，随机字段按模式生成。
+// ranks：该字段在同类型单张字段里的序号（按节点编号升序）；
+// 工作流配置里指定了 mediaIndex 时以指定为准，素材不够时重复最后一张
+function resolveValue(field, pools, ranks) {
   if (field.type === "image" || field.type === "audio" || field.type === "video") {
-    return mediaNames(field.type)[0] || defaultValueOf(field);
+    const names = pools[field.type];
+    if (!names.length) return defaultValueOf(field);
+    const rank = Number.isInteger(field.mediaIndex)
+      ? field.mediaIndex
+      : ranks.get(`${field.type}:${field.nodeId}:${field.key}`) ?? 0;
+    return names[Math.min(rank, names.length - 1)];
   }
   if (field.type === "image_list") {
-    const names = mediaNames("image");
+    const names = pools.image;
     if (!names.length) return defaultValueOf(field);
     // ImagePicker 这类输入是 JSON 字符串（默认值 "[]"），数组型输入才直接给数组
     return typeof field.default === "string" ? JSON.stringify(names) : names;
@@ -1684,9 +1725,16 @@ async function run() {
     // 暴露字段的值；没填过的用工作流里的默认值
     await loadFields();
     const params = {};
+    // 媒体池共用；每个单张字段用哪张由节点编号升序的序号决定
+    const mediaPools = {
+      image: mediaNames("image"),
+      audio: mediaNames("audio"),
+      video: mediaNames("video"),
+    };
+    const mediaRanks = buildMediaRanks(fields.value);
     for (const field of fields.value) {
       params[field.nodeId] = params[field.nodeId] || {};
-      params[field.nodeId][field.key] = resolveValue(field);
+      params[field.nodeId][field.key] = resolveValue(field, mediaPools, mediaRanks);
     }
 
     // 上游文本节点按连线顺序拼接，放在自身提示词前面一起提交；

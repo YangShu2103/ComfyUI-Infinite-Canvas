@@ -712,6 +712,15 @@ def _clean_fields(raw, workflow):
                 num = item.get(num_key)
                 if isinstance(num, (int, float)) and not isinstance(num, bool):
                     entry[num_key] = num
+        # 单张媒体字段可以指定用节点上的第几个素材（0 起），不填则按节点编号顺序自动分配
+        if field_type in ("image", "audio", "video"):
+            media_index = item.get("mediaIndex")
+            if (
+                isinstance(media_index, int)
+                and not isinstance(media_index, bool)
+                and 0 <= media_index < 100
+            ):
+                entry["mediaIndex"] = media_index
         cleaned.append(entry)
     return cleaned
 

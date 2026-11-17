@@ -1146,26 +1146,34 @@ function onShotDrop(event, shot, insertIndex) {
   addAssetToShot(data, shot, insertIndex);
 }
 
-// 从资产库拖进分镜：同名不进分镜；暂存池里没有的话也补一份
+// 从资产库拖进分镜：支持一次带多张（Ctrl/⌘ 多选），同名不进分镜但会补进暂存池
 function addAssetToShot(data, shot, insertIndex) {
   const assetRaw = data.getData(FILE_ASSET_DRAG_TYPE);
   if (!assetRaw) return;
-  let ref = null;
+  let parsed = null;
   try {
-    ref = JSON.parse(assetRaw);
+    parsed = JSON.parse(assetRaw);
   } catch {
-    ref = null;
+    return;
   }
-  if (!ref) return;
-  const item = graph?.itemsFromRefs?.([ref])?.[0];
-  if (!item) return;
+  const refs = (Array.isArray(parsed) ? parsed : [parsed]).filter((ref) => ref && ref.filename);
+  if (!refs.length) return;
+  // 逐个解析，保证顺序和资产库里的选择顺序一致
+  const items = refs
+    .map((ref) => graph?.itemsFromRefs?.([ref])?.[0])
+    .filter(Boolean);
+  if (!items.length) return;
+
   graph?.captureUndo?.(true);
-  if (!shot.media.some((entry) => entry.name === item.name)) {
-    const media = [...shot.media];
-    media.splice(insertIndex ?? media.length, 0, item);
-    updateShot(shot.id, { media });
-  }
-  addPoolCopy(item);
+  const media = [...shot.media];
+  let at = insertIndex ?? media.length;
+  items.forEach((item) => {
+    addPoolCopy(item);
+    if (media.some((entry) => entry.name === item.name)) return;
+    media.splice(at, 0, item);
+    at += 1;
+  });
+  updateShot(shot.id, { media });
 }
 
 // 往暂存池补一份（同名已存在则跳过）
