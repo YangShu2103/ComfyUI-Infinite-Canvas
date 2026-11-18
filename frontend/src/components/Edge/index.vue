@@ -3,8 +3,36 @@
     :path="path"
     :marker-end="markerEnd"
     class="canvas-edge"
-    :class="{ 'is-highlight': linkedToSelected }"
+    :class="{ 'is-highlight': linkedToSelected, 'is-running': linkedToRunning }"
   />
+
+  <!-- 高亮 / 运行中的连线：渐变按半个连线长度平铺并循环平移，
+       一圈正好推进一个周期，循环处严丝合缝，不会出现空档 -->
+  <template v-if="(linkedToSelected || linkedToRunning) && flowOn">
+    <defs>
+      <linearGradient
+        :id="gradId"
+        gradientUnits="userSpaceOnUse"
+        :x1="sourceX"
+        :y1="sourceY"
+        :x2="gradX2"
+        :y2="gradY2"
+        spreadMethod="repeat"
+      >
+        <stop class="flow-edge-stop" offset="0" />
+        <stop class="flow-peak-stop" offset="0.5" />
+        <stop class="flow-edge-stop" offset="1" />
+        <animateTransform
+          attributeName="gradientTransform"
+          type="translate"
+          :values="`0 0;${dx / 2} ${dy / 2}`"
+          :dur="linkedToRunning && !linkedToSelected ? '1.15s' : '1.6s'"
+          repeatCount="indefinite"
+        />
+      </linearGradient>
+    </defs>
+    <path :d="path" :stroke="`url(#${gradId})`" class="edge-flow" fill="none" />
+  </template>
 
   <!-- 透明加宽路径：只负责 hover 命中 -->
   <path
@@ -96,6 +124,33 @@ const linkedToSelected = computed(() =>
   )
 );
 
+// 端点节点正在运行（含排队）时，这条线也走流光，不用选中节点
+const runningIds = computed(() => {
+  const states = graph?.runStates;
+  if (!states) return new Set();
+  return new Set(
+    Object.keys(states).filter((id) => {
+      const status = states[id]?.status;
+      return status === "running" || status === "queued";
+    })
+  );
+});
+const linkedToRunning = computed(
+  () => runningIds.value.has(props.source) || runningIds.value.has(props.target)
+);
+
+// 流光开关（右下角菜单里切换，存在浏览器本地）
+const flowOn = computed(() => graph?.edgeFlow?.value !== false);
+
+// 渐变推进向量：沿 source→target 方向平移，光带才会顺着连线走
+const dx = computed(() => props.targetX - props.sourceX);
+const dy = computed(() => props.targetY - props.sourceY);
+// 渐变周期取连线长度的一半（两个光带），平移一个周期即无缝循环
+const gradX2 = computed(() => props.sourceX + dx.value / 2);
+const gradY2 = computed(() => props.sourceY + dy.value / 2);
+// 每条线一个独立渐变，避免互相抢同一个 id
+const gradId = computed(() => `edge-flow-${String(props.id).replace(/[^\w-]/g, "_")}`);
+
 // 路径和按钮之间留一点缓冲，避免鼠标移过去时闪一下
 let hideTimer = null;
 function show() {
@@ -123,6 +178,30 @@ function removeEdges(ids) {
 
 .canvas-edge {
   stroke: var(--c-edge);
+}
+
+/* 运行中的连线：实线主题色，和选中高亮区分开（光带更快） */
+.canvas-edge.is-running {
+  stroke: var(--c-accent);
+  stroke-width: 2.5;
+}
+
+/* 流光层：整条线填一层会平移的渐变，亮带连续扫过（不是一段段虚线） */
+.edge-flow {
+  stroke-width: 2.8;
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--c-accent) 70%, transparent));
+}
+
+/* 渐变两端透明、中间最亮，平移时就像一束光顺着线走 */
+.flow-edge-stop {
+  stop-color: var(--c-accent);
+  stop-opacity: 0;
+}
+
+.flow-peak-stop {
+  stop-color: color-mix(in srgb, var(--c-accent) 40%, #fff);
+  stop-opacity: 1;
 }
 
 /* 锚点落在连线中点，本身不占位 */

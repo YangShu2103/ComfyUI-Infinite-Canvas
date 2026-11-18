@@ -10,16 +10,7 @@
   >
     <!-- 标题在输入框上方，和参考图的文本节点一致 -->
     <div class="text-head">
-      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-        <path
-          d="M3 4h10M3 8h10M3 12h6"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-        />
-      </svg>
-      <span class="text-title">{{ title }}</span>
+      <NodeTitle class="text-title" :title="title" @rename="renameNode" />
     </div>
 
     <div class="text-body-wrap">
@@ -110,6 +101,7 @@
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
+import NodeTitle from "./NodeTitle.vue";
 import { useLibrary, PROMPT_DRAG_TYPE } from "../../composables/useLibrary";
 
 const props = defineProps({
@@ -123,11 +115,12 @@ const graph = inject("canvasGraph");
 const { open: openLibrary, registerTarget, unregisterTarget } = useLibrary();
 
 const hovered = ref(false);
-// 标题不带序号；老画布里存的「文本节点 N」也只显示成「文本节点」
-const title = computed(() => {
-  const label = props.data.label || "文本节点";
-  return label.replace(/\s*\d+$/, "") || "文本节点";
-});
+// 节点名称：默认「文本n」，从提示词面板拖出来时用提示词标题
+const title = computed(() => props.data.title || props.data.label || "文本节点");
+
+function renameNode(name) {
+  graph?.renameNode?.(props.id, name);
+}
 // 双击才进入编辑：未编辑时是普通文本块，单击仍然可以拖动节点
 const editing = ref(false);
 const bodyEl = ref(null);

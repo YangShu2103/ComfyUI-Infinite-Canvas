@@ -222,6 +222,9 @@ export function useGraph() {
   function baseData(label) {
     return {
       label,
+      // 节点名称：左上角展示、可单击改名；autoTitle 为 true 时允许被产物文件名覆盖
+      title: "",
+      autoTitle: true,
       // 没指定工作流的新节点默认用列表第一条
       workflow: defaultWorkflow(),
       // 工作流暴露字段的值：{ 节点id: { 输入名: 值 } }
@@ -230,6 +233,30 @@ export function useGraph() {
       randomFields: {},
       inputMedia: [],
     };
+  }
+
+  // ------------------------------------------------------------ 节点名称
+  // 名称只是给人看的标签，允许重名；只有自动编号需要避开已有名字
+  function titleTaken(name) {
+    return nodes.value.some((node) => node.data?.title === name);
+  }
+
+  // 默认名按类型递增：节点1 / 预处理1 / 文本1…
+  function nextTitle(prefix) {
+    let i = 1;
+    while (titleTaken(`${prefix}${i}`)) i += 1;
+    return `${prefix}${i}`;
+  }
+
+  // 手动改名后不再被产物文件名覆盖
+  function renameNode(nodeId, name) {
+    const node = nodes.value.find((item) => item.id === nodeId);
+    if (!node) return "";
+    const clean = String(name || "").trim();
+    if (!clean) return node.data.title || "";
+    node.data.title = clean;
+    node.data.autoTitle = false;
+    return clean;
   }
 
   // 预处理节点：分镜各自保存素材、提示词、工作流与参数；
@@ -280,7 +307,7 @@ export function useGraph() {
           x: Math.round(position.x - NODE_WIDTH / 2),
           y: Math.round(position.y - 36),
         },
-        data: baseData(`${nodeSeq}`),
+        data: { ...baseData(`${nodeSeq}`), title: nextTitle("节点") },
       },
     ]);
     // 新建后立即选中并展开参数面板，不用再点一下
@@ -311,6 +338,7 @@ export function useGraph() {
         },
         data: {
           ...baseData(label),
+          title: nextTitle("文本"),
           // 文本节点不参与出图，工作流留空
           workflow: "",
           text: "",
@@ -327,11 +355,18 @@ export function useGraph() {
   }
 
   // 从提示词面板拖到画布空白处：在落点新建文本节点并写入内容
-  function spawnPromptNodeAt(text, clientX, clientY) {
+  // name 有值时用提示词标题当节点名，否则沿用「文本n」
+  function spawnPromptNodeAt(text, clientX, clientY, name = "") {
     const point = flow.screenToFlowCoordinate({ x: clientX, y: clientY });
     const id = spawnPromptNode(point);
     const node = flow.findNode(id);
-    if (node) node.data.text = text || "";
+    if (node) {
+      node.data.text = text || "";
+      if (name) {
+        node.data.title = name;
+        node.data.autoTitle = false;
+      }
+    }
     return id;
   }
 
@@ -371,7 +406,7 @@ export function useGraph() {
           x: Math.round(position.x - PREPROCESS_WIDTH / 2),
           y: Math.round(position.y - 40),
         },
-        data: preprocessData(),
+        data: { ...preprocessData(), title: nextTitle("预处理") },
       },
     ]);
     nextTick(() => {
@@ -659,6 +694,8 @@ export function useGraph() {
         },
         data: {
           ...baseData(`${nodeSeq}`),
+          title: media[0]?.name || "节点",
+          autoTitle: false,
           media,
           index: 0,
         },
@@ -799,6 +836,9 @@ export function useGraph() {
         position: slot,
         data: {
           ...baseData(`${nodeSeq}`),
+          // 带产物派生时直接用产物文件名；空节点按「节点n」
+          title: items.length ? items[0].name || "节点" : nextTitle("节点"),
+          autoTitle: !items.length,
           // 生成参数沿用上游节点
           params: JSON.parse(JSON.stringify(source.data.params || {})),
           randomFields: JSON.parse(JSON.stringify(source.data.randomFields || {})),
@@ -1168,6 +1208,22 @@ export function useGraph() {
         },
       };
     });
+
+    // 旧画布没有节点名称：按类型补默认名，已有产物的直接用文件名（允许重名）
+    const seqCounters = { demo: 0, text: 0, preprocess: 0 };
+    for (const node of loadedNodes) {
+      if (node.data.title) continue;
+      const kind = node.type === "text" ? "text" : node.type === "preprocess" ? "preprocess" : "demo";
+      if (kind === "demo" && node.data.media?.length) {
+        node.data.title = node.data.media[0].name || "节点";
+        node.data.autoTitle = false;
+        continue;
+      }
+      const prefix = kind === "text" ? "文本" : kind === "preprocess" ? "预处理" : "节点";
+      seqCounters[kind] += 1;
+      node.data.title = `${prefix}${seqCounters[kind]}`;
+    }
+
     const loadedEdges = (canvas.edges || []).map((edge) => ({
       id: edge.id,
       type: edge.type || "canvas",
@@ -1255,6 +1311,29 @@ export function useGraph() {
   // 全览：把包含所有节点的区域缩放到视口里
   function fitCanvas() {
     flow.fitView({ padding: 0.18, includeHiddenNodes: false });
+  }
+
+  // 搜索框：按节点名称查找，回车依次跳到下一个匹配项并选中
+  let lastSearch = "";
+  let searchCursor = 0;
+  function locateByTitle(keyword) {
+    const query = String(keyword || "").trim().toLowerCase();
+    if (!query) return false;
+    if (query !== lastSearch) {
+      lastSearch = query;
+      searchCursor = 0;
+    }
+    const matches = nodes.value.filter((node) =>
+      `${node.data?.title || ""} ${node.data?.label || ""}`.toLowerCase().includes(query)
+    );
+    if (!matches.length) return false;
+    const target = matches[searchCursor % matches.length];
+    searchCursor = (searchCursor + 1) % matches.length;
+    flow.removeSelectedNodes?.();
+    const found = flow.findNode(target.id);
+    if (found) flow.addSelectedNodes([found]);
+    focusNode(target.id);
+    return true;
   }
 
   function onDblClick(event) {
@@ -1415,6 +1494,8 @@ export function useGraph() {
         position: { x: Math.round(position.x), y: Math.round(position.y) },
         data: {
           ...baseData(`${nodeSeq}`),
+          title: source.data.title || "节点",
+          autoTitle: false,
           workflow: source.data.workflow || defaultWorkflow(),
           params: JSON.parse(JSON.stringify(source.data.params || {})),
           randomFields: JSON.parse(JSON.stringify(source.data.randomFields || {})),
@@ -1681,7 +1762,7 @@ export function useGraph() {
           y: Math.round((minY + maxY) / 2 - NODE_HEIGHT / 2),
         },
         // 打包节点不继承工作流与参数，只作为素材收集箱
-        data: { ...baseData("素材包"), workflow: "", media, index: 0 },
+        data: { ...baseData("素材包"), title: "素材包", autoTitle: false, workflow: "", media, index: 0 },
       },
     ]);
 
@@ -1906,6 +1987,24 @@ export function useGraph() {
     for (const key of Object.keys(preprocessStates)) delete preprocessStates[key];
   }
 
+  // 连线高亮时的流光效果：纯外观偏好，存在浏览器本地
+  const EDGE_FLOW_KEY = "infinite-canvas:edge-flow";
+  const edgeFlow = ref(true);
+  try {
+    edgeFlow.value = localStorage.getItem(EDGE_FLOW_KEY) !== "0";
+  } catch {
+    // 隐私模式下读不到，按默认开着处理
+  }
+
+  function toggleEdgeFlow() {
+    edgeFlow.value = !edgeFlow.value;
+    try {
+      localStorage.setItem(EDGE_FLOW_KEY, edgeFlow.value ? "1" : "0");
+    } catch {
+      // 写不进去时只在本次会话生效
+    }
+  }
+
   function executionClientId() {
     const KEY = "infinite_canvas_client_id";
     let value = localStorage.getItem(KEY);
@@ -2054,6 +2153,9 @@ export function useGraph() {
       selected: node.selected,
       data: {
         ...baseData("文本节点"),
+        // 保留原节点名称，没有就按「文本n」
+        title: node.data?.title || nextTitle("文本"),
+        autoTitle: node.data?.autoTitle !== false,
         workflow: "",
         text,
         w: PROMPT_WIDTH,
@@ -2078,6 +2180,11 @@ export function useGraph() {
       .filter((value) => typeof value === "string" && value.trim())
       .join("\n\n");
     const target = nodes.value.find((item) => item.id === nodeId);
+
+    // 还没手动改过名的节点：产物落定后用文件名当节点名
+    if (target && items.length && target.data.autoTitle !== false) {
+      target.data.title = items[0].name || "节点";
+    }
 
     if (text) {
       if (items.length) {
@@ -2358,7 +2465,13 @@ export function useGraph() {
         id,
         type: "demo",
         position: { x, y },
-        data: { ...baseData(`${nodeSeq}`), media: items, index: 0 },
+        data: {
+          ...baseData(`${nodeSeq}`),
+          title: items[0]?.name || "节点",
+          autoTitle: false,
+          media: items,
+          index: 0,
+        },
       },
     ];
     return id;
@@ -2385,6 +2498,8 @@ export function useGraph() {
         },
         data: {
           ...baseData(`${nodeSeq}`),
+          title: item.name || "节点",
+          autoTitle: false,
           workflow: source.data.workflow || defaultWorkflow(),
           // 素材是复制出来的，id 重新生成，避免和源节点在同一上游上被去重；
           // 还在上传的素材保留原 id，等它上传完再按 id 同步引用
@@ -2416,6 +2531,8 @@ export function useGraph() {
         },
         data: {
           ...baseData(`${nodeSeq}`),
+          title: items[0]?.name || "节点",
+          autoTitle: false,
           media: items,
           index: 0,
         },
@@ -2499,6 +2616,8 @@ export function useGraph() {
         position: shotNodePosition(source, index, prevNode),
         data: {
           ...baseData(`任务 ${index + 1}`),
+          // 任务角标单独显示，节点名走普通节点的「节点n」
+          title: nextTitle("节点"),
           workflow: shot.workflow || defaultWorkflow(),
           params: JSON.parse(JSON.stringify(shot.params || {})),
           randomFields: JSON.parse(JSON.stringify(shot.randomFields || {})),
@@ -2967,6 +3086,8 @@ export function useGraph() {
     layoutRevision,
     runStates,
     preprocessStates,
+    edgeFlow,
+    toggleEdgeFlow,
     submitExecution,
     trackPrompt,
     restoreRunStates,
@@ -2982,6 +3103,7 @@ export function useGraph() {
     spawnPromptNode,
     spawnPromptNodeAt,
     setNodePrompt,
+    renameNode,
     runPreprocess,
     cancelPreprocess,
     createShot,
@@ -3007,6 +3129,7 @@ export function useGraph() {
     resetCanvas,
     focusNode,
     fitCanvas,
+    locateByTitle,
     captureUndo,
     undo,
     cutEdges,

@@ -591,7 +591,8 @@ async function onMerge(blob, filename) {
 .node-actions {
   position: absolute;
   left: 50%;
-  bottom: 100%;
+  /* 再往上让出节点名称那一行，底边与名字之间留约 5px */
+  bottom: calc(100% + 18px);
   z-index: 25;
   width: 0;
   height: 0;

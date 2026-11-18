@@ -47,6 +47,17 @@
       </svg>
     </button>
 
+    <!-- 搜索节点：回车聚焦第一个匹配项，再回车依次跳到下一个 -->
+    <input
+      v-model="keyword"
+      class="tb-search"
+      type="search"
+      placeholder="搜索节点"
+      @keydown.stop
+      @keydown.enter.prevent="emit('locate', keyword)"
+      @keydown.esc.prevent="keyword = ''"
+    />
+
     <span class="tb-sep" />
 
     <button class="tb-btn" type="button" title="画布管理" @click="emit('canvas')">
@@ -115,7 +126,11 @@
 </template>
 
 <script setup>
-const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
+import { ref } from "vue";
+
+const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow", "locate"]);
+
+const keyword = ref("");
 </script>
 
 <style scoped>
@@ -173,5 +188,35 @@ const emit = defineEmits(["focus", "fit", "canvas", "assets", "workflow"]);
   height: 18px;
   margin: 0 2px;
   background: var(--c-line);
+}
+
+/* 节点搜索：未激活只占「搜索节点」的宽度，聚焦后展开；胶囊圆角 */
+.tb-search {
+  width: 74px;
+  height: 28px;
+  margin: 0 4px;
+  padding: 0 8px;
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  background: var(--c-input-bg);
+  color: var(--c-text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s, width 0.18s ease;
+}
+
+.tb-search::placeholder {
+  color: var(--c-muted);
+}
+
+.tb-search:focus {
+  width: 120px;
+  border-color: var(--c-accent);
+}
+
+/* 清掉浏览器自带的搜索框清除按钮，避免和主题样式打架 */
+.tb-search::-webkit-search-cancel-button {
+  appearance: none;
 }
 </style>

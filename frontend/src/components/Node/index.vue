@@ -10,10 +10,13 @@
     @mouseenter="enterActions"
     @mouseleave="leaveActions"
   >
-    <!-- 由预处理节点派发的节点：左上角标出它属于哪个任务 -->
-    <span v-if="data.fromPreprocess" class="task-badge">
-      {{ data.taskLabel || "预处理" }}
-    </span>
+    <!-- 节点名称：左上角，可单击改名；预处理派发的节点在名字前带任务角标 -->
+    <NodeTitle
+      class="node-title-abs"
+      :title="displayTitle"
+      :badge="data.fromPreprocess ? data.taskLabel || '预处理' : ''"
+      @rename="renameNode"
+    />
 
     <Handle
       type="target"
@@ -619,6 +622,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
 import NodeActions from "./NodeActions.vue";
+import NodeTitle from "./NodeTitle.vue";
 import VideoPlayer from "./VideoPlayer.vue";
 import { useLibrary } from "../../composables/useLibrary.js";
 
@@ -672,6 +676,13 @@ const DEFAULT_NODE_W = 454;
 const DEFAULT_NODE_H = 226;
 const nodeW = computed(() => Math.max(MIN_NODE_W, Number(props.data.w) || DEFAULT_NODE_W));
 const nodeH = computed(() => Math.max(MIN_NODE_H, Number(props.data.h) || DEFAULT_NODE_H));
+
+// 节点名称：优先手动/自动生成的名字，老数据退回 label
+const displayTitle = computed(() => props.data.title || props.data.label || "节点");
+
+function renameNode(name) {
+  graph?.renameNode?.(props.id, name);
+}
 
 let resizeSession = null;
 
@@ -1806,23 +1817,12 @@ async function run() {
 }
 
 /* 预处理派发的节点：左上角任务徽标，整体落在节点外框之上，避免遮挡素材 */
-.task-badge {
+.node-title-abs {
   position: absolute;
-  top: -22px;
+  top: -24px;
   left: 12px;
   z-index: 5;
-  height: 16px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--c-accent);
-  box-shadow: 0 2px 6px var(--c-shadow);
-  color: var(--c-on-accent);
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 16px;
-  letter-spacing: 0.3px;
-  white-space: nowrap;
-  pointer-events: none;
+  max-width: calc(100% - 24px);
 }
 
 /* 拉线时整块节点都是连接热区，悬停给出可连接的视觉反馈 */

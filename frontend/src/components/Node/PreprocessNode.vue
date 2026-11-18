@@ -9,6 +9,13 @@
     @dragleave="onNodeDragLeave"
     @drop="onNodeDrop"
   >
+    <!-- 节点名称：左上角，单击改名 -->
+    <NodeTitle
+      class="pp-name"
+      :title="data.title || '预处理'"
+      @rename="renameNode"
+    />
+
     <Handle
       type="target"
       :position="Position.Left"
@@ -475,6 +482,7 @@
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { Handle, Position, useVueFlow } from "@vue-flow/core";
+import NodeTitle from "./NodeTitle.vue";
 import { FILE_ASSET_DRAG_TYPE } from "../../composables/useLibrary.js";
 
 const props = defineProps({
@@ -485,6 +493,10 @@ const props = defineProps({
 
 const graph = inject("canvasGraph");
 const flow = useVueFlow("demo");
+
+function renameNode(name) {
+  graph?.renameNode?.(props.id, name);
+}
 
 // ---------------------------------------------------------------- 端口
 // 显隐逻辑与普通节点一致：拉线时只亮对向端口，起点自己那一侧保留
@@ -1333,6 +1345,14 @@ function cancel() {
 </script>
 
 <style scoped>
+.pp-name {
+  position: absolute;
+  top: -24px;
+  left: 12px;
+  z-index: 5;
+  max-width: calc(100% - 24px);
+}
+
 .pp-node {
   position: relative;
   display: flex;

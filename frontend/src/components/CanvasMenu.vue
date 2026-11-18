@@ -43,6 +43,20 @@
           </svg>
           <span>{{ freeLabel }}</span>
         </button>
+        <button class="cm-item" type="button" @click.stop="toggleFlow">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path
+              d="M3 14c2.5 0 2.5-4 5-4s2.5 4 5 4 2.5-4 5-4 2.5 4 3 4"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span>连线流光</span>
+          <span class="cm-state">{{ flowOn ? "开" : "关" }}</span>
+        </button>
         <button class="cm-item is-danger" type="button" @click="exitCanvas">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <path
@@ -73,10 +87,16 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
 import { useTheme } from "../composables/useTheme.js";
 
 const { isLight, toggleTheme } = useTheme();
+const graph = inject("canvasGraph");
+
+const flowOn = computed(() => graph?.edgeFlow?.value !== false);
+function toggleFlow() {
+  graph?.toggleEdgeFlow?.();
+}
 
 const open = ref(false);
 // 被嵌进 ComfyUI 弹窗时通知外层关闭；直接打开页面（本地调试）时退回上一页或 ComfyUI 首页
@@ -238,6 +258,13 @@ onBeforeUnmount(() => {
 
 .cm-item.is-danger {
   color: var(--c-danger);
+}
+
+/* 开关状态文字靠右 */
+.cm-state {
+  margin-left: auto;
+  color: var(--c-muted);
+  font-size: 12px;
 }
 
 .cm-item.is-danger:hover {

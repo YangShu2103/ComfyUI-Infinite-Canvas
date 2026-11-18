@@ -61,6 +61,7 @@
         @canvas="openDialog('canvas')"
         @assets="openDialog('assets')"
         @workflow="openDialog('workflow')"
+        @locate="locateByTitle"
       />
 
       <!-- 右下角：主题切换 / 退出画布 -->
@@ -160,6 +161,8 @@ const {
   cancelPreprocess,
   createShot,
   preprocessStates,
+  edgeFlow,
+  toggleEdgeFlow,
   canvasPoint,
   duplicateNode,
   spawnMediaNodeAt,
@@ -184,6 +187,8 @@ const {
   resetCanvas,
   focusNode,
   fitCanvas,
+  locateByTitle,
+  renameNode,
   captureUndo,
   undo,
   cutEdges,
@@ -547,6 +552,8 @@ provide("canvasGraph", {
   viewport,
   runStates,
   preprocessStates,
+  edgeFlow,
+  toggleEdgeFlow,
   runPreprocess,
   cancelPreprocess,
   createShot,
@@ -555,6 +562,7 @@ provide("canvasGraph", {
   abortPrompt,
   captureUndo,
   undo,
+  renameNode,
 });
 
 // 画布管理：列表 / 切换 / 自动保存
@@ -628,12 +636,13 @@ async function onDrop(event) {
   // 从提示词面板拖出来的提示词：落在节点上替换它的提示词，落在空白处新建文本节点
   const promptRaw = event.dataTransfer?.getData(PROMPT_DRAG_TYPE);
   if (promptRaw) {
-    let text = "";
+    let prompt = null;
     try {
-      text = (JSON.parse(promptRaw)?.text || "").trim();
+      prompt = JSON.parse(promptRaw);
     } catch {
       return;
     }
+    const text = (prompt?.text || "").trim();
     if (!text) return;
     const promptTargetEl =
       event.target instanceof Element ? event.target.closest(".vue-flow__node") : null;
@@ -646,7 +655,8 @@ async function onDrop(event) {
       }
       return;
     }
-    spawnPromptNodeAt(text, event.clientX, event.clientY);
+    // 文本节点用提示词标题命名
+    spawnPromptNodeAt(text, event.clientX, event.clientY, prompt?.name || "");
     return;
   }
 
@@ -775,12 +785,11 @@ async function onDrop(event) {
   stroke-dasharray: none;
 }
 
-/* 与选中节点相连的线：主题色实线 + 轻微光晕 */
+/* 与选中节点相连的线：只留一层很淡的底色，视觉重点交给流光 */
 .flow-wrap :deep(.vue-flow__edge-path.is-highlight) {
-  stroke: var(--c-accent);
-  stroke-width: 2.5;
+  stroke: color-mix(in srgb, var(--c-accent) 55%, var(--c-edge));
+  stroke-width: 2;
   stroke-dasharray: none;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--c-accent) 45%, transparent));
 }
 
 /* 划线切断连线：覆盖层只负责绘制，不拦截任何鼠标事件 */
