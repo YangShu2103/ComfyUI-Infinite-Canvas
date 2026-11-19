@@ -527,8 +527,11 @@ function downloadName(item) {
   const raw = item?.name || item?.ref?.filename || "";
   const dot = raw.lastIndexOf(".");
   const ext = dot > 0 ? raw.slice(dot) : "";
-  // 节点名里可能带路径分隔符等系统不允许的字符，统一替换掉
-  const base = String(props.label || "").trim().replace(/[\\/:*?"<>|]/g, "_");
+  // 节点名可能本身就是文件名（带后缀），先去掉媒体后缀再拼，避免出现 xxx.png.png
+  const base = String(props.label || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\.(png|jpe?g|webp|gif|bmp|mp4|webm|mov|mkv|mp3|wav|flac|ogg|m4a)$/i, "");
   return `${base || raw.slice(0, dot > 0 ? dot : undefined) || "asset"}${ext}`;
 }
 
