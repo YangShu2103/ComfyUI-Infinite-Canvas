@@ -2719,6 +2719,12 @@ async function run() {
   margin-bottom: 8px;
 }
 
+/* 主提示词框允许纵向拖动调整高度，最小保持默认的 120px */
+.panel-prompt .panel-text {
+  min-height: 120px;
+  resize: vertical;
+}
+
 /* 上游文本节点的展示块，排在自身提示词框上方；和提示词框同底色，但不可编辑 */
 .panel-upstream {
   display: flex;
