@@ -522,11 +522,21 @@ function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// 下载文件名以节点名称为准，扩展名沿用素材原名
+function downloadName(item) {
+  const raw = item?.name || item?.ref?.filename || "";
+  const dot = raw.lastIndexOf(".");
+  const ext = dot > 0 ? raw.slice(dot) : "";
+  // 节点名里可能带路径分隔符等系统不允许的字符，统一替换掉
+  const base = String(props.label || "").trim().replace(/[\\/:*?"<>|]/g, "_");
+  return `${base || raw.slice(0, dot > 0 ? dot : undefined) || "asset"}${ext}`;
+}
+
 // 下载当前显示的资产（走 /view 拉二进制，确保文件名可控）
 async function downloadCurrent() {
   const item = current.value;
   if (!item) return;
-  const filename = item.name || (item.ref && item.ref.filename) || "asset";
+  const filename = downloadName(item);
   try {
     const response = await fetch(item.url);
     if (!response.ok) throw new Error("下载失败");

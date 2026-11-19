@@ -35,7 +35,7 @@
       :media="ownMedia"
       :input-media="inputMedia"
       :index="index"
-      :label="data.label"
+      :label="data.title || data.label"
       @select="select"
     />
     <!-- <div class="node-head" :title="current ? current.name : data.label">
