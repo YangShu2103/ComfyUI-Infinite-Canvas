@@ -846,6 +846,8 @@ function historyThumb(item) {
     subfolder: file.subfolder || "",
     type: file.type,
     size: "320",
+    // 缩略图接口升级（保留 alpha），刷掉浏览器 immutable 缓存
+    tv: "2",
   });
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
 }
@@ -1077,6 +1079,8 @@ function thumbUrl(file, size = 320) {
     type: file.type || kind.value,
     size: String(size),
     v: String(file.updated || 0),
+    // 缩略图接口升级（保留 alpha），刷掉浏览器 immutable 缓存
+    tv: "2",
   });
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
 }
@@ -1763,7 +1767,25 @@ function placePreview(width, height, ready) {
   overflow: hidden;
   border: 1px solid var(--c-line);
   border-radius: 9px;
-  background: var(--c-surface-2);
+  /* 透明区域透出棋盘格：带蒙板的图片能直接看出涂抹范围 */
+  background-color: var(--c-surface-2);
+  background-image:
+    linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.14) 25%,
+      transparent 25%,
+      transparent 75%,
+      rgba(255, 255, 255, 0.14) 75%
+    ),
+    linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.14) 25%,
+      transparent 25%,
+      transparent 75%,
+      rgba(255, 255, 255, 0.14) 75%
+    );
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
   cursor: grab;
   user-select: none;
 }
@@ -1892,6 +1914,13 @@ function placePreview(width, height, ready) {
   height: 100%;
   display: block;
   object-fit: cover;
+  /* 蒙板区域显示为棋盘格 */
+  background-color: var(--c-surface-2);
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.14) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.14) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.14) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.14) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
 }
 
 .preview-bubble-audio {

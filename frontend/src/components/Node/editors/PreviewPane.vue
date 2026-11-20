@@ -4,12 +4,14 @@
     class="preview-stage"
     :class="{
       'is-zoomed': isImage && zoom > 1,
-      'is-pannable': isImage && zoom > 1,
+      'is-pannable': isImage && zoom > 1 && !editing,
+      'is-editing': editing,
       'has-strip': showStrip && isVideo,
       'is-fullscreen': fullscreen,
     }"
     @wheel.prevent="onWheel"
     @pointerdown="onPointerDown"
+    @contextmenu.prevent
   >
     <CompareView
       v-if="comparing && upstream && item"
@@ -30,15 +32,36 @@
       <audio v-else-if="item && item.kind === 'audio'" :src="item.url" controls />
       <img
         v-else-if="item"
-        :src="item.url"
+        ref="imgEl"
+        :src="imageSrc"
         :alt="item.name"
         draggable="false"
         :style="imageStyle"
+        @load="onImageLoad"
       />
       <!-- 文本类工作流：没有素材时直接大字号展示生成结果 -->
       <div v-else-if="text" class="preview-text">{{ text }}</div>
       <span v-else class="preview-empty">暂无素材</span>
     </template>
+
+    <!-- 编辑状态：直接盖在预览图上的笔迹层 -->
+    <canvas
+      v-if="editing && isImage && item && !comparing"
+      ref="paintEl"
+      class="paint-layer"
+      :class="{ 'is-hand': panMode, 'is-mask': maskMode }"
+      @pointerdown.stop="onPaintPointerDown"
+      @contextmenu.prevent
+    />
+    <!-- 蒙板层：半透明红色显示，画在笔迹层之上 -->
+    <canvas
+      v-if="editing && isImage && item && !comparing"
+      ref="maskEl"
+      class="paint-layer mask-layer"
+      :class="{ 'is-active': maskMode, 'is-invisible': !maskVisible }"
+      @pointerdown.stop="onPaintPointerDown"
+      @contextmenu.prevent
+    />
 
     <!-- 视频截帧 / 全屏按钮由右侧工具栏调用 -->
 
@@ -62,10 +85,8 @@
       </svg>
     </button>
 
-    <div v-if="isImage && !comparing" class="preview-zoom">{{ Math.round(zoom * 100) }}%</div>
-
-    <!-- 素材缩略条：悬浮在预览区底部 -->
-    <div v-if="showStrip" class="preview-strip" @wheel.stop @pointerdown.stop>
+    <!-- 素材缩略条：编辑时隐藏，避免误切素材 -->
+    <div v-if="showStrip && !editing" class="preview-strip" @wheel.stop @pointerdown.stop>
       <button
         v-for="(thumb, i) in thumbs"
         :key="thumb.id || i"
@@ -92,8 +113,8 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { clamp } from "../../../utils/image";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { canvasToBlob, clamp, loadImage } from "../../../utils/image";
 import CompareView from "./CompareView.vue";
 
 const props = defineProps({
@@ -105,9 +126,18 @@ const props = defineProps({
   comparing: { type: Boolean, default: false },
   // 文本类工作流的产物：没有媒体时展示成全文
   text: { type: String, default: "" },
+  // 编辑状态：直接在预览图上涂抹
+  editing: { type: Boolean, default: false },
+  tool: { type: String, default: "brush" },
+  color: { type: String, default: "#000000" },
+  size: { type: Number, default: 24 },
+  // 抓手模式：左键拖动查看，不落笔
+  panMode: { type: Boolean, default: false },
+  // 蒙板模式：落笔写入蒙板层而不是普通笔迹
+  maskMode: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(["select", "frame"]);
+const emit = defineEmits(["select", "frame", "edit-state"]);
 
 const stageEl = ref(null);
 const zoom = ref(1);
@@ -135,11 +165,20 @@ const imageStyle = computed(() => ({
   cursor: zoom.value > 1 ? "grab" : "default",
 }));
 
+// 带蒙板的素材显示的是合成图；编辑时改用不带 alpha 的原图作底，方便反复修改
+const imageSrc = computed(() => {
+  const item = props.item;
+  if (!item) return "";
+  if (props.editing && item.original?.url) return item.original.url;
+  return item.url;
+});
+
 watch(
   () => props.item && props.item.id,
   () => {
     zoom.value = 1;
     pan.value = { x: 0, y: 0 };
+    resetEditState();
   }
 );
 
@@ -163,11 +202,21 @@ function onWheel(event) {
 }
 
 // 放大后按住拖动查看
-function onPointerDown(event) {
-  if (props.comparing || !isImage.value || zoom.value <= 1) return;
+function beginPan(event) {
   drag = { x: event.clientX, y: event.clientY, pan: { ...pan.value } };
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
+}
+
+function onPointerDown(event) {
+  if (props.comparing || !isImage.value) return;
+  if (props.editing) {
+    // 编辑时左键留给画笔，右键/中键才平移
+    if ((event.button === 1 || event.button === 2) && zoom.value > 1) beginPan(event);
+    return;
+  }
+  if (zoom.value <= 1) return;
+  beginPan(event);
 }
 
 function onPointerMove(event) {
@@ -200,10 +249,496 @@ watch(fullscreen, (on) => {
   else window.removeEventListener("keydown", onFullscreenKey);
 });
 
+// ------------------------------------------------------------ 在预览图上直接编辑
+const imgEl = ref(null);
+const paintEl = ref(null);
+const maskEl = ref(null);
+const strokes = ref([]);
+const redoStack = ref([]);
+let activeStroke = null;
+let paintSyncRaf = 0;
+let stageObserver = null;
+
+// 蒙板：白色笔迹存在 maskWhite 离屏画布里，显示层 tint 成半透明红
+const maskStrokes = ref([]);
+const maskRedo = ref([]);
+const maskVisible = ref(true);
+const maskInverted = ref(false);
+const maskBase = ref(null); // 已保存的蒙板位图（白色笔迹）
+let maskWhite = null;
+let maskDirty = false;
+
+const hasStrokes = computed(() => strokes.value.length > 0);
+const hasMask = computed(() => maskStrokes.value.length > 0 || !!maskBase.value);
+
+function emitEditState() {
+  const inMask = props.maskMode;
+  emit("edit-state", {
+    canUndo: inMask ? maskStrokes.value.length > 0 : strokes.value.length > 0,
+    canRedo: inMask ? maskRedo.value.length > 0 : redoStack.value.length > 0,
+    hasStrokes: hasStrokes.value,
+    hasMask: hasMask.value,
+  });
+}
+
+watch(
+  () => [
+    props.maskMode,
+    strokes.value.length,
+    redoStack.value.length,
+    maskStrokes.value.length,
+    maskRedo.value.length,
+  ],
+  emitEditState
+);
+
+function resetEditState() {
+  strokes.value = [];
+  redoStack.value = [];
+  maskStrokes.value = [];
+  maskRedo.value = [];
+  maskVisible.value = true;
+  maskInverted.value = false;
+  maskBase.value = null;
+  maskWhite = null;
+  maskDirty = false;
+  emit("edit-state", { canUndo: false, canRedo: false, hasStrokes: false, hasMask: false });
+}
+
+// 笔迹层始终贴合当前预览图的位置和大小（缩放、平移、全屏都会变）
+function syncPaintRect() {
+  const stage = stageEl.value;
+  const img = imgEl.value;
+  if (!stage || !img) return;
+  const s = stage.getBoundingClientRect();
+  const r = img.getBoundingClientRect();
+  for (const canvas of [paintEl.value, maskEl.value]) {
+    if (!canvas) continue;
+    canvas.style.left = `${r.left - s.left}px`;
+    canvas.style.top = `${r.top - s.top}px`;
+    canvas.style.width = `${r.width}px`;
+    canvas.style.height = `${r.height}px`;
+  }
+}
+
+function schedulePaintSync() {
+  if (!props.editing || paintSyncRaf) return;
+  paintSyncRaf = requestAnimationFrame(() => {
+    paintSyncRaf = 0;
+    syncPaintRect();
+  });
+}
+
+function initPaint() {
+  const img = imgEl.value;
+  const canvas = paintEl.value;
+  if (!img || !canvas || !img.naturalWidth) return;
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+
+  if (maskEl.value) {
+    maskEl.value.width = canvas.width;
+    maskEl.value.height = canvas.height;
+  }
+  maskWhite = document.createElement("canvas");
+  maskWhite.width = canvas.width;
+  maskWhite.height = canvas.height;
+  maskInverted.value = !!props.item?.maskInverted;
+  maskDirty = false;
+  loadMaskBase();
+  syncPaintRect();
+}
+
+// 已保存的蒙板作为底图载入；没有蒙板时尝试从图片 alpha 里识别（ComfyUI 蒙板编辑器画的）
+async function loadMaskBase() {
+  maskBase.value = null;
+  maskStrokes.value = [];
+  maskRedo.value = [];
+  const src = props.item?.mask?.url;
+  if (src) {
+    try {
+      maskBase.value = await loadImage(src);
+    } catch {
+      maskBase.value = null;
+    }
+  } else {
+    importAlphaMask();
+  }
+  repaintMask();
+  emitEditState();
+}
+
+// 外部画的蒙板存在 alpha 里（透明处 = 蒙板），转成白色蒙板层
+function importAlphaMask() {
+  const img = imgEl.value;
+  if (!img || !img.naturalWidth || !img.naturalHeight) return;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+    const mask = document.createElement("canvas");
+    mask.width = canvas.width;
+    mask.height = canvas.height;
+    const mctx = mask.getContext("2d");
+    const out = mctx.createImageData(mask.width, mask.height);
+    let found = false;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = pixels[i + 3];
+      if (alpha >= 250) continue;
+      found = true;
+      out.data[i] = 255;
+      out.data[i + 1] = 255;
+      out.data[i + 2] = 255;
+      out.data[i + 3] = 255 - alpha;
+    }
+    if (!found) return;
+    mctx.putImageData(out, 0, 0);
+    maskBase.value = mask;
+  } catch {
+    // 读不到像素（画布被污染等）就当作没有蒙板
+  }
+}
+
+function onImageLoad() {
+  if (props.editing) nextTick(initPaint);
+}
+
+watch(
+  () => props.editing,
+  (on) => {
+    if (!on) {
+      resetEditState();
+      return;
+    }
+    nextTick(() => {
+      if (imgEl.value?.complete) initPaint();
+    });
+  }
+);
+
+watch([zoom, () => pan.value.x, () => pan.value.y, fullscreen], schedulePaintSync);
+
+function paintPoint(event) {
+  const canvas = paintEl.value;
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: ((event.clientX - rect.left) / rect.width) * canvas.width,
+    y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+  };
+}
+
+// 笔刷大小按屏幕像素算，缩放后观感一致
+function brushSizeNatural() {
+  const canvas = paintEl.value;
+  const rect = canvas.getBoundingClientRect();
+  const scale = canvas.width / Math.max(1, rect.width);
+  return Math.max(1, props.size * scale);
+}
+
+function strokeCtx(stroke) {
+  const canvas = stroke.mask ? maskEl.value : paintEl.value;
+  if (!canvas) return null;
+  const ctx = canvas.getContext("2d");
+  ctx.save();
+  if (stroke.mask) {
+    // 蒙板层始终用半透明红显示；反相时红底挖空，画笔变成“擦除红色”
+    const erasing = stroke.tool === "eraser";
+    ctx.globalCompositeOperation =
+      erasing !== maskInverted.value ? "destination-out" : "source-over";
+    ctx.strokeStyle = "#ff3b30";
+    ctx.fillStyle = "#ff3b30";
+  } else {
+    ctx.globalCompositeOperation =
+      stroke.tool === "eraser" ? "destination-out" : "source-over";
+    ctx.strokeStyle = stroke.color;
+    ctx.fillStyle = stroke.color;
+  }
+  ctx.lineWidth = stroke.size;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  return ctx;
+}
+
+function drawDot(stroke, point) {
+  const ctx = strokeCtx(stroke);
+  if (!ctx) return;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, stroke.size / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawSegment(stroke, from, to) {
+  const ctx = strokeCtx(stroke);
+  if (!ctx) return;
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function onPaintPointerDown(event) {
+  // 抓手模式：左键也用来平移
+  if (props.panMode) {
+    event.preventDefault();
+    beginPan(event);
+    return;
+  }
+  if (event.button === 1 || event.button === 2) {
+    if (zoom.value > 1) {
+      event.preventDefault();
+      beginPan(event);
+    }
+    return;
+  }
+  if (event.button !== 0) return;
+  if (props.maskMode ? !maskEl.value : !paintEl.value) return;
+  event.preventDefault();
+  activeStroke = {
+    mask: props.maskMode,
+    tool: props.tool,
+    color: props.maskMode ? "#ffffff" : props.color,
+    size: brushSizeNatural(),
+    points: [paintPoint(event)],
+  };
+  drawDot(activeStroke, activeStroke.points[0]);
+  window.addEventListener("pointermove", onPaintMove);
+  window.addEventListener("pointerup", onPaintUp);
+}
+
+function onPaintMove(event) {
+  if (!activeStroke) return;
+  const point = paintPoint(event);
+  const last = activeStroke.points[activeStroke.points.length - 1];
+  if (Math.hypot(point.x - last.x, point.y - last.y) < 0.5) return;
+  drawSegment(activeStroke, last, point);
+  activeStroke.points.push(point);
+}
+
+function onPaintUp() {
+  if (activeStroke) {
+    if (activeStroke.mask) {
+      maskStrokes.value = [...maskStrokes.value, activeStroke];
+      maskRedo.value = [];
+      maskDirty = true;
+      repaintMask();
+    } else {
+      strokes.value = [...strokes.value, activeStroke];
+      redoStack.value = [];
+    }
+    activeStroke = null;
+  }
+  window.removeEventListener("pointermove", onPaintMove);
+  window.removeEventListener("pointerup", onPaintUp);
+}
+
+function repaintEdits() {
+  const canvas = paintEl.value;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const stroke of strokes.value) {
+    if (stroke.points.length === 1) {
+      drawDot(stroke, stroke.points[0]);
+      continue;
+    }
+    for (let i = 1; i < stroke.points.length; i += 1) {
+      drawSegment(stroke, stroke.points[i - 1], stroke.points[i]);
+    }
+  }
+}
+
+// ------------------------------------------------------------ 蒙板图层
+function paintMaskShape(ctx, stroke) {
+  ctx.beginPath();
+  if (stroke.points.length === 1) {
+    ctx.arc(stroke.points[0].x, stroke.points[0].y, stroke.size / 2, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+  ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+  for (let i = 1; i < stroke.points.length; i += 1) {
+    ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+  }
+  ctx.stroke();
+}
+
+// 重建白色蒙板位图 + 红色显示层
+function repaintMask() {
+  const display = maskEl.value;
+  if (!display || !maskWhite) return;
+  const wctx = maskWhite.getContext("2d");
+  wctx.clearRect(0, 0, maskWhite.width, maskWhite.height);
+  if (maskBase.value) {
+    wctx.drawImage(maskBase.value, 0, 0, maskWhite.width, maskWhite.height);
+  }
+  for (const stroke of maskStrokes.value) {
+    wctx.save();
+    wctx.globalCompositeOperation =
+      stroke.tool === "eraser" ? "destination-out" : "source-over";
+    wctx.strokeStyle = "#ffffff";
+    wctx.fillStyle = "#ffffff";
+    wctx.lineWidth = stroke.size;
+    wctx.lineCap = "round";
+    wctx.lineJoin = "round";
+    paintMaskShape(wctx, stroke);
+    wctx.restore();
+  }
+
+  const ctx = display.getContext("2d");
+  ctx.clearRect(0, 0, display.width, display.height);
+  ctx.globalCompositeOperation = "source-over";
+  if (maskInverted.value) {
+    // 反相：整块铺红，再用蒙板挖空
+    ctx.fillStyle = "#ff3b30";
+    ctx.fillRect(0, 0, display.width, display.height);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(maskWhite, 0, 0);
+  } else {
+    ctx.drawImage(maskWhite, 0, 0);
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = "#ff3b30";
+    ctx.fillRect(0, 0, display.width, display.height);
+  }
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function undoEdit() {
+  if (props.maskMode) {
+    if (!maskStrokes.value.length) return;
+    const last = maskStrokes.value[maskStrokes.value.length - 1];
+    maskStrokes.value = maskStrokes.value.slice(0, -1);
+    maskRedo.value = [...maskRedo.value, last];
+    maskDirty = true;
+    repaintMask();
+    return;
+  }
+  if (!strokes.value.length) return;
+  const last = strokes.value[strokes.value.length - 1];
+  strokes.value = strokes.value.slice(0, -1);
+  redoStack.value = [...redoStack.value, last];
+  repaintEdits();
+}
+
+function redoEdit() {
+  if (props.maskMode) {
+    if (!maskRedo.value.length) return;
+    const stroke = maskRedo.value[maskRedo.value.length - 1];
+    maskRedo.value = maskRedo.value.slice(0, -1);
+    maskStrokes.value = [...maskStrokes.value, stroke];
+    maskDirty = true;
+    repaintMask();
+    return;
+  }
+  if (!redoStack.value.length) return;
+  const stroke = redoStack.value[redoStack.value.length - 1];
+  redoStack.value = redoStack.value.slice(0, -1);
+  strokes.value = [...strokes.value, stroke];
+  repaintEdits();
+}
+
+function clearEdit() {
+  if (props.maskMode) {
+    if (!hasMask.value) return;
+    maskStrokes.value = [];
+    maskRedo.value = [];
+    maskBase.value = null;
+    maskInverted.value = false;
+    maskDirty = true;
+    repaintMask();
+    emitEditState();
+    return;
+  }
+  if (!strokes.value.length) return;
+  strokes.value = [];
+  redoStack.value = [];
+  repaintEdits();
+}
+
+function toggleMaskVisibility() {
+  maskVisible.value = !maskVisible.value;
+}
+
+function invertMask() {
+  if (!hasMask.value) return;
+  maskInverted.value = !maskInverted.value;
+  maskDirty = true;
+  repaintMask();
+  emitEditState();
+}
+
+// 保存：原图 + 笔迹合成 PNG
+async function exportEdit() {
+  const img = imgEl.value;
+  const canvas = paintEl.value;
+  if (!img || !canvas || !img.naturalWidth) return null;
+  const output = document.createElement("canvas");
+  output.width = img.naturalWidth;
+  output.height = img.naturalHeight;
+  const ctx = output.getContext("2d");
+  ctx.drawImage(img, 0, 0, output.width, output.height);
+  ctx.drawImage(canvas, 0, 0, output.width, output.height);
+
+  const painted = hasStrokes.value ? await canvasToBlob(output) : null;
+  if (!hasMask.value) {
+    return { blob: painted, maskTouched: maskDirty, maskBlob: null, maskedBlob: null, maskInverted: false };
+  }
+
+  // 蒙板 PNG（白色，不反相）：用于下次继续编辑
+  const maskBlob = await canvasToBlob(maskWhite);
+
+  // alpha = 1 - 蒙板；反相后 alpha = 蒙板
+  const alpha = document.createElement("canvas");
+  alpha.width = maskWhite.width;
+  alpha.height = maskWhite.height;
+  const actx = alpha.getContext("2d");
+  if (maskInverted.value) {
+    actx.drawImage(maskWhite, 0, 0);
+  } else {
+    actx.fillStyle = "#ffffff";
+    actx.fillRect(0, 0, alpha.width, alpha.height);
+    actx.globalCompositeOperation = "destination-out";
+    actx.drawImage(maskWhite, 0, 0);
+  }
+
+  const masked = document.createElement("canvas");
+  masked.width = output.width;
+  masked.height = output.height;
+  const mctx = masked.getContext("2d");
+  mctx.drawImage(output, 0, 0);
+  mctx.globalCompositeOperation = "destination-in";
+  mctx.drawImage(alpha, 0, 0);
+
+  return {
+    blob: painted,
+    maskTouched: maskDirty,
+    maskBlob,
+    maskedBlob: await canvasToBlob(masked),
+    maskInverted: maskInverted.value,
+  };
+}
+
+onMounted(() => {
+  if (stageEl.value) {
+    stageObserver = new ResizeObserver(() => schedulePaintSync());
+    stageObserver.observe(stageEl.value);
+  }
+});
+
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onFullscreenKey);
   window.removeEventListener("pointermove", onPointerMove);
   window.removeEventListener("pointerup", onPointerUp);
+  window.removeEventListener("pointermove", onPaintMove);
+  window.removeEventListener("pointerup", onPaintUp);
+  if (paintSyncRaf) cancelAnimationFrame(paintSyncRaf);
+  if (stageObserver) stageObserver.disconnect();
 });
 
 // ------------------------------------------------------------ 视频截帧
@@ -278,7 +813,28 @@ async function exportFrame(kind) {
 }
 
 // 右侧工具栏（全屏 / 截帧按钮）通过 ref 调用
-defineExpose({ fullscreen, exporting, toggleFullscreen, exportFrame });
+// 回到适应窗口的 100%
+function resetView() {
+  zoom.value = 1;
+  pan.value = { x: 0, y: 0 };
+}
+
+defineExpose({
+  fullscreen,
+  exporting,
+  toggleFullscreen,
+  exportFrame,
+  undoEdit,
+  redoEdit,
+  clearEdit,
+  exportEdit,
+  resetView,
+  maskVisible,
+  maskInverted,
+  hasMask,
+  toggleMaskVisibility,
+  invertMask,
+});
 </script>
 
 <style scoped>
@@ -314,6 +870,50 @@ defineExpose({ fullscreen, exporting, toggleFullscreen, exportFrame });
   will-change: transform;
 }
 
+/* 编辑笔迹层：位置和大小由 JS 同步到图片的显示区域 */
+.paint-layer {
+  position: absolute;
+  z-index: 2;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.paint-layer.is-hand {
+  cursor: grab;
+}
+
+/* 蒙板层压在最上面：只有蒙板模式才接收指针事件 */
+.mask-layer {
+  z-index: 3;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.mask-layer.is-active {
+  pointer-events: auto;
+}
+
+.mask-layer.is-invisible {
+  opacity: 0;
+}
+
+.paint-layer.is-mask {
+  pointer-events: none;
+}
+
+.paint-layer.is-hand:active {
+  cursor: grabbing;
+}
+
+.preview-stage > img {
+  background-color: var(--c-surface);
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.12) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.12) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.12) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.12) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+
 .preview-stage video {
   max-width: 100%;
   max-height: 100%;
@@ -343,18 +943,6 @@ defineExpose({ fullscreen, exporting, toggleFullscreen, exportFrame });
   user-select: text;
 }
 
-.preview-zoom {
-  position: absolute;
-  left: 12px;
-  top: 10px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #f4f4f8;
-  font-size: 11px;
-}
-
-/* 全屏预览：铺满整个浏览器视口，盖住画布与浮层 */
 .preview-stage.is-fullscreen {
   position: fixed;
   inset: 0;

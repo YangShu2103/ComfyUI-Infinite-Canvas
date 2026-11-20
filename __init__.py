@@ -328,7 +328,8 @@ def _thumb_hash(real_path):
 
 
 def _thumb_file(real_path, stamp, size, max_side=_THUMB_SIZE):
-    name = f"{_thumb_hash(real_path)}__{int(stamp)}__{int(size)}__{int(max_side)}.webp"
+    # v2：缩略图保留 alpha（之前统一转 RGB，蒙板透明区域被抹平）
+    name = f"{_thumb_hash(real_path)}__{int(stamp)}__{int(size)}__{int(max_side)}__v2.webp"
     return os.path.join(_thumb_dir(), name)
 
 
@@ -397,7 +398,10 @@ def _build_thumb(src_path, dest_path, max_side=_THUMB_SIZE):
             _encode_thumb(frame.convert("RGB"), tmp_path, max_side)
         else:
             with Image.open(src_path) as raw:
-                _encode_thumb(ImageOps.exif_transpose(raw).convert("RGB"), tmp_path, max_side)
+                img = ImageOps.exif_transpose(raw)
+                # 带透明通道的图片保留 alpha：蒙板信息就在 alpha 里
+                has_alpha = img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info
+                _encode_thumb(img.convert("RGBA" if has_alpha else "RGB"), tmp_path, max_side)
         os.replace(tmp_path, dest_path)
         tmp_path = None
     finally:
@@ -649,6 +653,7 @@ _FIELD_TYPES = {
     "audio",
     "video",
     "random",
+    "lora",
 }
 _FIELD_NUM_KEYS = ("min", "max", "step")
 
@@ -733,6 +738,23 @@ def _public_fields(name, workflow):
         field["default"] = value if isinstance(value, (str, int, float, bool, list)) else ""
         result.append(field)
     return result
+
+
+# 实时预览节点：KJNodes 的 Model Preview Override 通过 WebSocket 事件
+# kj_preview_override 推送采样中的画面，事件里只有工作流节点 id，
+# 前端需要这份 id 映射才能把预览落到发起任务的那个画布节点上
+_PREVIEW_NODE_TYPES = {"ModelPreviewOverrideKJ", "PreviewOverrideKJ", "PreviewOverride"}
+
+
+def _preview_node_ids(workflow):
+    """工作流里负责实时预览的节点 id（保持提交时的原始字符串形式）"""
+    if not isinstance(workflow, dict):
+        return []
+    return [
+        str(node_id)
+        for node_id, node in workflow.items()
+        if isinstance(node, dict) and node.get("class_type") in _PREVIEW_NODE_TYPES
+    ]
 
 
 def _save_fields(name, fields):
@@ -1551,7 +1573,9 @@ def register_routes(app):
         workflow = _read_workflow(name)
         if workflow is None:
             return web.json_response({"error": "工作流不存在"}, status=404)
-        return web.json_response({"fields": _public_fields(name, workflow)})
+        return web.json_response(
+            {"fields": _public_fields(name, workflow), "previewNodes": _preview_node_ids(workflow)}
+        )
 
     async def save_fields(request):
         name = _safe_name(request.match_info.get("name", ""))
@@ -1740,6 +1764,29 @@ def register_routes(app):
             },
         )
 
+    async def list_loras(request):
+        """ComfyUI 的 LoRA 文件列表：优先 /models/loras，老版本回退到 LoraLoader 节点定义"""
+        origin = _comfy_base(request)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{origin}/models/loras") as response:
+                    if response.status == 200:
+                        names = await response.json(content_type=None)
+                        if isinstance(names, list):
+                            return web.json_response({"loras": [str(name) for name in names]})
+                async with session.get(f"{origin}/object_info/LoraLoader") as response:
+                    body = await response.json(content_type=None)
+        except aiohttp.ClientError as exc:
+            return web.json_response({"error": f"连接 ComfyUI 失败: {exc}", "loras": []}, status=502)
+
+        info = (body or {}).get("LoraLoader") or {}
+        groups = info.get("input") or {}
+        for group in ("required", "optional"):
+            spec = (groups.get(group) or {}).get("lora_name")
+            if isinstance(spec, list) and spec and isinstance(spec[0], list):
+                return web.json_response({"loras": [str(name) for name in spec[0]]})
+        return web.json_response({"loras": []})
+
     async def execute_workflow(request):
         """按选中的工作流跑一次：写入素材/暴露参数后提交 ComfyUI，回传产物"""
         try:
@@ -1787,7 +1834,10 @@ def register_routes(app):
             return web.json_response({"error": "ComfyUI 未返回任务 id"}, status=502)
 
         # 立即返回任务 id，进度与产物由前端通过 /ws 和 /prompts/{id} 跟进
-        return web.json_response({"prompt_id": prompt_id})
+        # preview_nodes：该工作流里带实时预览的节点 id，前端用它把 kj_preview_override 事件落到画布节点
+        return web.json_response(
+            {"prompt_id": prompt_id, "preview_nodes": _preview_node_ids(workflow)}
+        )
 
     async def prompt_result(request):
         """查询一次任务结果：done 带素材，error 带原因，running 表示还没结束"""
@@ -1941,6 +1991,7 @@ def register_routes(app):
             web.put(f"{API_PREFIX}/workflows/{{name}}/fields", save_fields),
             web.post(f"{API_PREFIX}/media", upload_media),
             web.delete(f"{API_PREFIX}/media/{{filename}}", delete_media),
+            web.get(f"{API_PREFIX}/loras", list_loras),
             web.post(f"{API_PREFIX}/package", package_media),
             web.get(f"{API_PREFIX}/canvases", list_canvases),
             web.post(f"{API_PREFIX}/canvases", create_canvas),

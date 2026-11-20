@@ -163,6 +163,8 @@ function mediaThumbUrl(ref, size = 640, version = "") {
     subfolder: ref.subfolder || "",
     type: ref.type || "input",
     size: String(size),
+    // 缩略图接口升级（保留 alpha）后用它刷掉浏览器里 immutable 缓存的旧图
+    tv: "2",
   });
   if (version) params.set("v", String(version));
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
@@ -2059,13 +2061,91 @@ export function useGraph() {
     return { value: Math.min(Number(data?.value) || 0, max), max };
   }
 
-  // 进度百分比来自采样步数，加载模型/解码阶段没有事件，容易长时间停在 0%，
-  // 因此界面上不做进度估算，只显示状态 + 计时（见 Node/index.vue）
+  // 实时预览帧：KJNodes 的 Model Preview Override 每步推一张 base64 图
+  // （preview_frames > 1 时是 mp4 / 动态 webp），挂到发起任务的画布节点上
+  function previewOwner(nodeId) {
+    const key = String(nodeId);
+    let best = "";
+    let bestAt = -1;
+    for (const canvasId of promptNodes.values()) {
+      const state = runStates[canvasId];
+      if (!state || !state.previewNodes || !state.previewNodes.includes(key)) continue;
+      // 两个任务的工作流里有同一个节点 id 时，优先取最近开始的运行中任务
+      if (state.status === "running") {
+        const at = Number(state.startedAt) || 0;
+        if (at > bestAt) {
+          bestAt = at;
+          best = canvasId;
+        }
+      } else if (!best) {
+        best = canvasId;
+      }
+    }
+    return best;
+  }
+
+  function clearPreview(state) {
+    if (!state) return;
+    if (state.preview?.url) URL.revokeObjectURL(state.preview.url);
+    delete state.preview;
+  }
+
+  function onPreviewFrame(data) {
+    if (data.node_id == null || !data.image) return;
+    const canvasId = previewOwner(data.node_id);
+    const state = canvasId ? runStates[canvasId] : null;
+    if (!state) return;
+    // 预览事件比 progress 更早说明采样已经开始
+    if (state.status === "queued") state.status = "running";
+
+    let url = "";
+    try {
+      const binary = atob(data.image);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      url = URL.createObjectURL(new Blob([bytes], { type: data.mime || "image/jpeg" }));
+    } catch {
+      return;
+    }
+    const previous = state.preview;
+    state.preview = {
+      url,
+      mime: data.mime || "image/jpeg",
+      w: Number(data.w) || 0,
+      h: Number(data.h) || 0,
+      step: Number(data.step) || 0,
+      total: Number(data.total) || 0,
+    };
+    // 等 DOM 换到新地址再释放旧帧，避免 img/video 在替换瞬间裂图
+    if (previous?.url) setTimeout(() => URL.revokeObjectURL(previous.url), 1000);
+  }
+
+  async function hydratePreviewNodes(nodeId, promptId, workflow) {
+    if (!workflow) return;
+    try {
+      const response = await fetch(
+        `/infinite_canvas/api/workflows/${encodeURIComponent(workflow)}/fields`
+      );
+      const data = await response.json();
+      const state = runStates[nodeId];
+      // 期间任务可能已经结束或换成了新任务
+      if (!state || state.promptId !== promptId) return;
+      state.previewNodes = (data.previewNodes || []).map(String);
+    } catch {
+      // 拿不到映射就不显示实时预览
+    }
+  }
+
   function onSocketMessage(event) {
     let message = null;
     try {
       message = JSON.parse(event.data);
     } catch {
+      return;
+    }
+    // KJNodes 的实时预览走自定义事件，消息里只有工作流节点 id，没有 prompt_id
+    if (message?.type === "kj_preview_override") {
+      onPreviewFrame(message.data || {});
       return;
     }
     const data = message?.data || {};
@@ -2109,7 +2189,11 @@ export function useGraph() {
       throw new Error((data && data.error) || `运行失败（${response.status}）`);
     }
     if (!data || !data.prompt_id) throw new Error("ComfyUI 未返回任务 id");
-    return data.prompt_id;
+    return {
+      promptId: data.prompt_id,
+      // 工作流里带实时预览的节点 id，用来把 kj_preview_override 事件落到本节点
+      previewNodes: (data.preview_nodes || []).map(String),
+    };
   }
 
   function stopPolling(promptId) {
@@ -2127,6 +2211,7 @@ export function useGraph() {
     forgetPrompt(promptId);
     const state = runStates[nodeId];
     if (state) {
+      clearPreview(state);
       state.status = "error";
       state.error = message || "运行失败";
     }
@@ -2175,6 +2260,7 @@ export function useGraph() {
     forgetPrompt(promptId);
 
     const state = runStates[nodeId];
+    clearPreview(state);
     const items = itemsFromRefs(images);
     const text = (texts || [])
       .filter((value) => typeof value === "string" && value.trim())
@@ -2291,7 +2377,7 @@ export function useGraph() {
 
   // 提交成功后先按"排队中"接管，第一次查询会立刻纠正成运行中。
   // startedAt 由调用方给出：刷新后恢复任务时沿用原来的提交时刻，计时不会从头开始
-  function trackPrompt(nodeId, promptId, startAt = 0) {
+  function trackPrompt(nodeId, promptId, startAt = 0, previewNodes = []) {
     const startedAt = Number(startAt) || Date.now();
     promptNodes.set(promptId, nodeId);
     nodePrompts.set(nodeId, promptId);
@@ -2304,10 +2390,19 @@ export function useGraph() {
       stepValue: 0,
       stepMax: 0,
       promptId,
+      // 工作流里带实时预览的节点 id（每次提交由后端带回）
+      previewNodes: Array.isArray(previewNodes) ? previewNodes.map(String) : [],
       // 从提交开始计时（排队时间也算），界面显示已等/已用时长
       startedAt,
     };
     ensureSocket();
+
+    // 刷新后恢复的任务没经过提交接口，补一次工作流里的预览节点映射。
+    // 拿不到就不显示实时预览，不影响任务本身
+    if (!runStates[nodeId].previewNodes.length) {
+      const target = nodes.value.find((item) => item.id === nodeId);
+      hydratePreviewNodes(nodeId, promptId, target?.data?.workflow);
+    }
 
     const timer = setInterval(() => {
       // 不设超时：视频类任务可能跑一两个小时，只有 ComfyUI 明确返回结果才收尾，
@@ -2376,6 +2471,7 @@ export function useGraph() {
       forgetPrompt(promptId);
     }
     nodePrompts.delete(nodeId);
+    clearPreview(state);
     delete runStates[nodeId];
     return promptId;
   }
@@ -2706,12 +2802,12 @@ export function useGraph() {
     const value = stored === undefined ? fallback : stored;
     if (field.type === "image" || field.type === "audio" || field.type === "video") {
       const item = media.find((entry) => entry.kind === field.type && entry.ref?.filename);
-      return item ? shotFileName(item.ref) : fallback;
+      return item ? shotFileName(item.masked?.ref || item.ref) : fallback;
     }
     if (field.type === "image_list") {
       const names = media
         .filter((entry) => entry.kind === "image" && entry.ref?.filename)
-        .map((entry) => shotFileName(entry.ref));
+        .map((entry) => shotFileName(entry.masked?.ref || entry.ref));
       if (!names.length) return fallback;
       return typeof field.default === "string" ? JSON.stringify(names) : names;
     }
@@ -2799,13 +2895,16 @@ export function useGraph() {
       // 和普通节点一致：把上游素材里的图片按顺序交给工作流的载图节点
       const imageRefs = media
         .filter((item) => item.kind === "image" && item.ref?.filename)
-        .map((item) => ({
-          filename: item.ref.filename,
-          subfolder: item.ref.subfolder || "",
-          type: item.ref.type || "input",
-        }));
-      const promptId = await submitExecution({ workflow, params, imageRefs });
-      trackPrompt(nodeId, promptId);
+        .map((item) => {
+          const ref = item.masked?.ref || item.ref;
+          return {
+            filename: ref.filename,
+            subfolder: ref.subfolder || "",
+            type: ref.type || "input",
+          };
+        });
+      const { promptId, previewNodes } = await submitExecution({ workflow, params, imageRefs });
+      trackPrompt(nodeId, promptId, 0, previewNodes);
     } catch (error) {
       clearWaiting(nodeId);
       clearUploading(nodeId);

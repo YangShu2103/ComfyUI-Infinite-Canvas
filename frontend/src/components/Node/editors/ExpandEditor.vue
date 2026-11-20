@@ -3,7 +3,7 @@
     <!-- 参数控件挂到右侧控制列 -->
     <Teleport v-if="controlsEl" :to="controlsEl">
       <span class="editor-size">{{ sizeText }}</span>
-      <span class="editor-tip">拖动边框调整画布范围，拖动画面移动图像位置</span>
+      <span class="editor-tip">拖动边框调整画布范围，拖动画面移动图像位置；按住 Alt/Option 拖动可左右、上下对称扩边</span>
     </Teleport>
     <!-- 应用按钮挂到右侧底部 -->
     <Teleport v-if="applyEl" :to="applyEl">
@@ -148,46 +148,61 @@ function onPointerMove(event) {
   }
 
   const handle = dragState.handle;
+  // Alt/Option：以中心为基准，对边同步扩/缩相同像素
+  const symmetric = event.altKey;
   let x = start.x;
   let y = start.y;
   let w = start.w;
   let h = start.h;
 
-  if (handle.includes("w")) {
-    const nextX = start.x + dx;
-    w = start.w - dx;
-    if (w < MIN_SIZE) {
-      w = MIN_SIZE;
-      x = start.x + start.w - MIN_SIZE;
-    } else if (w > MAX_SIZE) {
-      w = MAX_SIZE;
-      x = start.x + start.w - MAX_SIZE;
-    } else {
-      x = nextX;
+  if (symmetric) {
+    if (handle.includes("w") || handle.includes("e")) {
+      const dir = handle.includes("e") ? 1 : -1;
+      w = clamp(start.w + dir * 2 * dx, MIN_SIZE, MAX_SIZE);
+      x = start.x - (w - start.w) / 2;
     }
-  }
-  if (handle.includes("e")) {
-    w = start.w + dx;
-    if (w < MIN_SIZE) w = MIN_SIZE;
-    if (w > MAX_SIZE) w = MAX_SIZE;
-  }
-  if (handle.includes("n")) {
-    const nextY = start.y + dy;
-    h = start.h - dy;
-    if (h < MIN_SIZE) {
-      h = MIN_SIZE;
-      y = start.y + start.h - MIN_SIZE;
-    } else if (h > MAX_SIZE) {
-      h = MAX_SIZE;
-      y = start.y + start.h - MAX_SIZE;
-    } else {
-      y = nextY;
+    if (handle.includes("n") || handle.includes("s")) {
+      const dir = handle.includes("s") ? 1 : -1;
+      h = clamp(start.h + dir * 2 * dy, MIN_SIZE, MAX_SIZE);
+      y = start.y - (h - start.h) / 2;
     }
-  }
-  if (handle.includes("s")) {
-    h = start.h + dy;
-    if (h < MIN_SIZE) h = MIN_SIZE;
-    if (h > MAX_SIZE) h = MAX_SIZE;
+  } else {
+    if (handle.includes("w")) {
+      const nextX = start.x + dx;
+      w = start.w - dx;
+      if (w < MIN_SIZE) {
+        w = MIN_SIZE;
+        x = start.x + start.w - MIN_SIZE;
+      } else if (w > MAX_SIZE) {
+        w = MAX_SIZE;
+        x = start.x + start.w - MAX_SIZE;
+      } else {
+        x = nextX;
+      }
+    }
+    if (handle.includes("e")) {
+      w = start.w + dx;
+      if (w < MIN_SIZE) w = MIN_SIZE;
+      if (w > MAX_SIZE) w = MAX_SIZE;
+    }
+    if (handle.includes("n")) {
+      const nextY = start.y + dy;
+      h = start.h - dy;
+      if (h < MIN_SIZE) {
+        h = MIN_SIZE;
+        y = start.y + start.h - MIN_SIZE;
+      } else if (h > MAX_SIZE) {
+        h = MAX_SIZE;
+        y = start.y + start.h - MAX_SIZE;
+      } else {
+        y = nextY;
+      }
+    }
+    if (handle.includes("s")) {
+      h = start.h + dy;
+      if (h < MIN_SIZE) h = MIN_SIZE;
+      if (h > MAX_SIZE) h = MAX_SIZE;
+    }
   }
 
   frame.x = x;

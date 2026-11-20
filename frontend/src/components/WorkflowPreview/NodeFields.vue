@@ -94,6 +94,9 @@
             <div v-if="isMediaType(entry.type)" class="nf-note">
               运行时自动取节点上的{{ MEDIA_LABELS[entry.type] }}，优先上游、其次自身，这里不用填{{ isSingleMedia(entry.type) ? "；也可在上方指定第几个" : "" }}。
             </div>
+            <div v-if="entry.type === 'lora'" class="nf-note">
+              运行时在节点面板里增删 LoRA、调整强度和触发词，写回该节点的 lora_bundle；这里只决定是否暴露给画布。
+            </div>
           </div>
         </div>
 
@@ -136,6 +139,7 @@ const TYPE_OPTIONS = [
   { value: "audio", label: "音频" },
   { value: "video", label: "视频" },
   { value: "random", label: "随机数" },
+  { value: "lora", label: "多LoRA加载器" },
 ];
 
 const MEDIA_LABELS = {
@@ -172,6 +176,8 @@ function preview(value) {
 function guessType(value, key) {
   if (typeof value === "boolean") return "switch";
   if (typeof value === "number") return "number";
+  // ND Super LoRA Loader 这类节点的 lora_bundle：JSON 字符串数组
+  if (/lora.*bundle/i.test(key)) return "lora";
   const text = String(value || "");
   if (/text|prompt|string|caption/i.test(key) || text.includes("\n") || text.length > 40) {
     return "textarea";

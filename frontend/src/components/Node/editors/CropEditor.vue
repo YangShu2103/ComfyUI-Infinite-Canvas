@@ -373,8 +373,12 @@ onBeforeUnmount(() => {
 }
 
 .editor-size {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-surface) 85%, transparent);
+  color: var(--c-text);
   font-size: 12px;
-  color: var(--c-muted);
+  text-align: center;
 }
 
 .primary-btn {

@@ -213,8 +213,32 @@
     <div
       v-if="showProgress && !culled"
       class="node-progress"
+      :class="{ 'has-preview': previewFrame }"
     >
-      <div v-if="runState?.status === 'error'" class="node-progress-body">
+      <!-- 采样中的实时预览：KJNodes Model Preview Override 推来的帧 -->
+      <template v-if="previewFrame">
+        <video
+          v-if="previewFrame.mime === 'video/mp4'"
+          class="node-preview-media"
+          :src="previewFrame.url"
+          autoplay
+          muted
+          loop
+          playsinline
+        />
+        <img
+          v-else
+          class="node-preview-media"
+          :src="previewFrame.url"
+          alt="实时预览"
+          draggable="false"
+        />
+        <div class="node-preview-hud">
+          <span class="node-preview-badge">实时预览</span>
+          <span v-if="progressSub" class="node-preview-step">{{ progressSub }}</span>
+        </div>
+      </template>
+      <div v-else-if="runState?.status === 'error'" class="node-progress-body">
         <span class="node-progress-icon is-error">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
             <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
@@ -542,7 +566,116 @@
             </div>
           </div>
         </div>
-        <div v-if="data.workflow && !gridFields.length" class="panel-hint">
+        <!-- 多 LoRA 加载器：增删/启用/强度/触发词，最终写回 lora_bundle（JSON 字符串） -->
+        <div v-for="field in loraFields" :key="field.id" class="panel-lora">
+          <div class="panel-lora-head">
+            <span class="panel-lora-title" :title="`#${field.nodeId} ${field.key}`">
+              {{ field.label }}
+            </span>
+            <button class="panel-lora-add" type="button" @click.stop="addLora(field)">
+              + 添加 LoRA
+            </button>
+          </div>
+
+          <div v-if="!loraRows(field).length" class="panel-lora-empty">
+            {{
+              loraBroken(field)
+                ? "原 lora_bundle 不是合法 JSON，添加后会覆盖"
+                : "还没有 LoRA，点右上角添加"
+            }}
+          </div>
+
+          <div
+            v-for="(row, i) in loraRows(field)"
+            :key="`${field.id}:${i}`"
+            class="panel-lora-row"
+            :class="{ 'is-off': !row.enabled }"
+          >
+            <label
+              class="panel-switch"
+              :class="{ 'is-on': row.enabled }"
+              :title="row.enabled ? '已启用' : '已禁用'"
+            >
+              <input
+                type="checkbox"
+                :checked="row.enabled"
+                @change="updateLora(field, i, { enabled: $event.target.checked })"
+                @keydown.stop
+              />
+              <span class="switch-track"><span class="switch-thumb" /></span>
+            </label>
+
+            <select
+              class="panel-select panel-lora-pick"
+              :value="row.lora"
+              @change="updateLora(field, i, { lora: $event.target.value })"
+              @keydown.stop
+            >
+              <option v-if="!row.lora" value="" disabled>选择 LoRA</option>
+              <option v-for="name in loraOptions(row)" :key="name" :value="name">
+                {{ name }}
+              </option>
+            </select>
+
+            <input
+              class="panel-input panel-lora-num"
+              type="number"
+              step="0.05"
+              :value="row.strength"
+              title="模型强度"
+              @input="updateStrength(field, i, $event.target.value)"
+              @keydown.stop
+            />
+            <button
+              class="panel-lora-clip"
+              :class="{ 'is-on': loraClipOpen[`${field.id}:${i}`] }"
+              type="button"
+              title="单独调整 CLIP 强度"
+              @click.stop="toggleClip(field, i)"
+            >
+              CLIP
+            </button>
+            <input
+              v-if="loraClipOpen[`${field.id}:${i}`]"
+              class="panel-input panel-lora-num"
+              type="number"
+              step="0.05"
+              :value="row.strengthClip"
+              title="CLIP 强度"
+              @input="updateLora(field, i, { strengthClip: Number($event.target.value) || 0 })"
+              @keydown.stop
+            />
+
+            <input
+              class="panel-input panel-lora-words"
+              type="text"
+              :value="row.triggerWords"
+              placeholder="触发词"
+              spellcheck="false"
+              @input="updateLora(field, i, { triggerWords: $event.target.value })"
+              @keydown.stop
+            />
+
+            <button
+              class="panel-lora-remove"
+              type="button"
+              title="删除这条 LoRA"
+              @click.stop="removeLora(field, i)"
+            >
+              <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                <path
+                  d="M6 6l12 12M18 6L6 18"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="data.workflow && !gridFields.length && !loraFields.length" class="panel-hint">
           该工作流没有其他可调参数
         </div>
 
@@ -1149,6 +1282,12 @@ function onFilesPicked(event) {
 // 当前节点的运行状态（由 useGraph 统一维护，不写进画布数据）
 const runState = computed(() => graph?.runStates?.[props.id] || null);
 
+// 采样中的实时预览帧（KJNodes Model Preview Override 通过 WebSocket 推来）
+const previewFrame = computed(() => {
+  const frame = runState.value?.preview;
+  return frame && runState.value?.status === "running" ? frame : null;
+});
+
 // 视口裁剪：视口外的节点不挂载素材/预览内容，省掉大量 DOM 与图片解码。
 // 素材引用与连线都在 useGraph 的 nodes/edges 上，和组件挂不挂载无关，
 // 所以上游不在视口时，下游依然能拿到它的图片。
@@ -1447,12 +1586,142 @@ function mediaNames(kind) {
     : [...inputMedia.value, ...ownMedia.value];
   return pool
     .filter((item) => item.kind === kind && item.ref?.filename)
-    .map((item) => fileNameOf(item.ref));
+    // 带蒙板的图片用「原图 + 蒙板」合成出来的 RGBA 文件
+    .map((item) => fileNameOf(item.masked?.ref || item.ref));
 }
 
 // 素材字段的值来自节点素材，节点面板上不显示
 const MEDIA_TYPES = new Set(["image", "image_list", "audio", "video"]);
-const editableFields = computed(() => fields.value.filter((field) => !MEDIA_TYPES.has(field.type)));
+// 多 LoRA 字段单独占一块，不混在普通参数网格里
+const editableFields = computed(() =>
+  fields.value.filter((field) => !MEDIA_TYPES.has(field.type) && field.type !== "lora")
+);
+const loraFields = computed(() => fields.value.filter((field) => field.type === "lora"));
+
+// ------------------------------------------------------------ 多 LoRA 加载器
+// 值是 ND Super LoRA Loader 的 lora_bundle：JSON 字符串数组
+const loras = ref([]);
+let lorasLoading = false;
+
+async function loadLoras() {
+  if (loras.value.length || lorasLoading) return;
+  lorasLoading = true;
+  try {
+    const response = await fetch("/infinite_canvas/api/loras");
+    const data = await response.json();
+    loras.value = Array.isArray(data?.loras) ? data.loras : [];
+  } catch {
+    loras.value = [];
+  } finally {
+    lorasLoading = false;
+  }
+}
+
+// 兼容后端读取的别名字段（on / strengthTwo / triggerWord），输出时统一成标准字段
+function normalizeLora(item) {
+  const strength = Number(item.strength);
+  const clip = Number(item.strengthClip ?? item.strengthTwo);
+  const model = Number.isFinite(strength) ? strength : 1;
+  return {
+    ...item,
+    lora: String(item.lora || ""),
+    enabled: item.enabled !== undefined ? !!item.enabled : !!item.on,
+    strength: model,
+    strengthClip: Number.isFinite(clip) ? clip : model,
+    triggerWords: String(item.triggerWords ?? item.triggerWord ?? ""),
+    tag: item.tag || "General",
+    autoFetched: !!item.autoFetched,
+  };
+}
+
+function loraRows(field) {
+  const raw = valueOf(field);
+  if (Array.isArray(raw)) return raw.map(normalizeLora);
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item === "object").map(normalizeLora)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+// 原配置不是合法 JSON 时给个提示，避免用户以为只是没配 LoRA
+function loraBroken(field) {
+  const raw = valueOf(field);
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  try {
+    return !Array.isArray(JSON.parse(raw));
+  } catch {
+    return true;
+  }
+}
+
+function writeLoraRows(field, rows) {
+  setValue(field, JSON.stringify(rows));
+}
+
+// 每行强度默认联动：改模型强度时同步 CLIP；点 CLIP 按钮后才拆开
+const loraClipOpen = reactive({});
+const clipKey = (field, index) => `${field.id}:${index}`;
+
+function addLora(field) {
+  const rows = loraRows(field);
+  rows.push({
+    lora: "",
+    enabled: true,
+    strength: 1,
+    strengthClip: 1,
+    triggerWords: "",
+    tag: "General",
+    autoFetched: false,
+  });
+  writeLoraRows(field, rows);
+  loadLoras();
+}
+
+function updateLora(field, index, patch) {
+  const rows = loraRows(field);
+  if (!rows[index]) return;
+  rows[index] = { ...rows[index], ...patch };
+  writeLoraRows(field, rows);
+}
+
+function updateStrength(field, index, raw) {
+  const value = Number(raw);
+  const strength = Number.isFinite(value) ? value : 0;
+  const patch = { strength };
+  if (!loraClipOpen[clipKey(field, index)]) patch.strengthClip = strength;
+  updateLora(field, index, patch);
+}
+
+function toggleClip(field, index) {
+  const key = clipKey(field, index);
+  loraClipOpen[key] = !loraClipOpen[key];
+}
+
+function removeLora(field, index) {
+  writeLoraRows(
+    field,
+    loraRows(field).filter((_, i) => i !== index)
+  );
+}
+
+// 下拉里始终保留当前值：文件被删掉时也能看到原来的选择
+function loraOptions(row) {
+  if (row.lora && !loras.value.includes(row.lora)) return [row.lora, ...loras.value];
+  return loras.value;
+}
+
+watch(
+  () => panelOpen.value && loraFields.value.length > 0,
+  (need) => {
+    if (need) loadLoras();
+  },
+  { immediate: true }
+);
 
 // 提示词框常驻：取第一个文本类字段作为提示词；工作流没暴露文本字段时只作占位输入
 const promptField = computed(
@@ -1731,7 +2000,7 @@ async function run() {
     const sourceMedia = inPlace ? inputMedia.value : ownMedia.value;
     const imageRefs = sourceMedia
       .filter((item) => item.kind === "image" && item.ref?.filename)
-      .map((item) => ({ ...item.ref }));
+      .map((item) => ({ ...(item.masked?.ref || item.ref) }));
 
     // 暴露字段的值；没填过的用工作流里的默认值
     await loadFields();
@@ -1778,12 +2047,12 @@ async function run() {
       return;
     }
 
-    const promptId = await graph.submitExecution({
+    const { promptId, previewNodes } = await graph.submitExecution({
       workflow: props.data.workflow,
       params,
       imageRefs,
     });
-    graph.trackPrompt(targetId, promptId);
+    graph.trackPrompt(targetId, promptId, 0, previewNodes);
   } catch (error) {
     // 提交/上传失败时清掉等待状态和刚派生出的空节点（复用的节点保留，里面有上次的产物）
     graph.clearWaiting(targetId);
@@ -1885,6 +2154,16 @@ async function run() {
   display: block;
   object-fit: cover;
   pointer-events: none;
+}
+
+/* 带蒙板的图片：透明区域透出棋盘格 */
+.media-stack-card img {
+  background-color: var(--c-input-bg);
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.14) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.14) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.14) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.14) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
 }
 
 /* 视频封面还没生成时的占位块（避免把视频地址塞进 img 显示成裂图） */
@@ -2185,6 +2464,48 @@ async function run() {
     transparent 48%
   );
   animation: node-queued-pulse 1.6s ease-in-out infinite;
+}
+
+/* 有实时预览时画面铺满节点，不再叠中心光晕 */
+.node-progress.has-preview::before {
+  display: none;
+}
+
+.node-preview-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--c-panel-2);
+}
+
+.node-preview-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #000 55%, transparent);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(4px);
+  transform: translateX(-50%);
+}
+
+.node-preview-badge {
+  font-weight: 600;
+  color: color-mix(in srgb, var(--c-accent) 80%, #fff);
+}
+
+.node-preview-step {
+  opacity: 0.82;
 }
 
 .node-progress-spinner {
@@ -2786,6 +3107,139 @@ async function run() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 多 LoRA 加载器：整块占满面板宽度，一行一个 LoRA */
+.panel-lora {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  background: var(--c-input-bg);
+}
+
+.panel-lora-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-lora-title {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--c-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-lora-add {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-yellow);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-yellow) 16%, transparent);
+  color: var(--accent-yellow);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.panel-lora-add:hover {
+  background: var(--accent-yellow);
+  color: var(--c-on-accent);
+}
+
+.panel-lora-empty {
+  font-size: 11px;
+  color: var(--c-muted);
+}
+
+.panel-lora-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* LoRA 行里的启用开关做得更紧凑 */
+.panel-lora-row .panel-switch {
+  width: 34px;
+  height: 20px;
+}
+
+.panel-lora-row .switch-thumb {
+  width: 14px;
+  height: 14px;
+}
+
+.panel-lora-row .panel-switch.is-on .switch-thumb {
+  transform: translateX(14px);
+}
+
+.panel-lora-row.is-off .panel-lora-pick,
+.panel-lora-row.is-off .panel-lora-num,
+.panel-lora-row.is-off .panel-lora-words {
+  opacity: 0.55;
+}
+
+.panel-lora-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.panel-lora-num {
+  flex: 0 0 auto;
+  width: 58px;
+}
+
+.panel-lora-words {
+  flex: 1 1 120px;
+  min-width: 80px;
+  width: auto;
+}
+
+.panel-lora-clip {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-muted);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.panel-lora-clip.is-on {
+  color: var(--c-accent);
+  border-color: var(--c-accent);
+}
+
+.panel-lora-remove {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+
+.panel-lora-remove:hover {
+  color: var(--c-danger);
 }
 
 .panel-input-wide {

@@ -777,7 +777,10 @@ const FIELD_RANK = { switch: 0, select: 1, random: 3 };
 function shotFields(shot) {
   const promptId = promptFieldOf(shot)?.id;
   return (fieldsByWorkflow.value[shot.workflow] || [])
-    .filter((field) => !MEDIA_TYPES.has(field.type) && field.id !== promptId)
+    .filter(
+      (field) =>
+        !MEDIA_TYPES.has(field.type) && field.type !== "lora" && field.id !== promptId
+    )
     .slice()
     .sort((a, b) => (FIELD_RANK[a.type] ?? 2) - (FIELD_RANK[b.type] ?? 2));
 }

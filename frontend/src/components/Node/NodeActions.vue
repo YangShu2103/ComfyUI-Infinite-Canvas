@@ -100,13 +100,73 @@
                 </button>
               </div>
 
-              <span v-if="mode === 'preview'" class="side-hint">
-                滚轮缩放 50%–800%，放大后可拖动查看
-              </span>
+              <!-- 编辑：在预览图上直接涂抹 -->
+              <button
+                v-if="mode === 'preview' && isImage"
+                class="side-compare side-edit"
+                :class="{ 'is-active': editing }"
+                type="button"
+                @click="toggleEdit"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path
+                    d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <span>{{ editing ? "退出编辑" : "编辑" }}</span>
+              </button>
+
+              <!-- 蒙板操作：进入蒙板模式后在右侧提供显示/隐藏与反相 -->
+              <template v-if="mode === 'preview' && editing && maskMode">
+                <button
+                  class="side-compare"
+                  :class="{ 'is-active': previewMaskVisible }"
+                  type="button"
+                  @click="previewRef?.toggleMaskVisibility()"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path
+                      d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8" />
+                    <path
+                      v-if="!previewMaskVisible"
+                      d="M4 4l16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  <span>{{ previewMaskVisible ? "隐藏蒙板" : "显示蒙板" }}</span>
+                </button>
+                <button
+                  class="side-compare"
+                  :class="{ 'is-active': previewMaskInverted }"
+                  type="button"
+                  @click="previewRef?.invertMask()"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" />
+                    <path d="M12 3a9 9 0 010 18z" fill="currentColor" opacity="0.55" />
+                  </svg>
+                  <span>{{ previewMaskInverted ? "取消反相" : "反相" }}</span>
+                </button>
+              </template>
 
               <!-- 对比：自身与上游第一条素材类型一致时显示 -->
               <button
-                v-if="mode === 'preview' && canCompare"
+                v-if="mode === 'preview' && canCompare && !editing"
                 class="side-compare"
                 :class="{ 'is-active': comparing }"
                 type="button"
@@ -188,24 +248,132 @@
             <div
               ref="applyEl"
               class="side-apply"
-              :class="{ 'is-hidden': mode === 'preview' }"
-            />
+              :class="{ 'is-hidden': mode === 'preview' && !editing }"
+            >
+              <button
+                v-if="mode === 'preview' && editing"
+                class="apply-btn"
+                type="button"
+                :disabled="!previewEdit.hasStrokes && !previewEdit.hasMask"
+                @click="applyEdit"
+              >
+                应用
+              </button>
+            </div>
           </aside>
 
           <div class="asset-main">
             <template v-if="showContent">
-              <PreviewPane
-                v-if="mode === 'preview'"
-                ref="previewRef"
-                :item="current"
-                :media="media"
-                :index="index"
-                :upstream="upstreamFirst"
-                :comparing="comparing"
-                :text="resultText"
-                @select="emit('select', $event)"
-                @frame="onExportFrame"
-              />
+              <div v-if="mode === 'preview'" class="preview-shell">
+                <!-- 编辑状态：工具栏直接摆在预览图上方 -->
+                <div v-if="editing" class="edit-top">
+                  <div class="edit-row">
+                    <div class="edit-tools">
+                      <button
+                        type="button"
+                        class="edit-tool"
+                        :class="{ 'is-active': editTool === 'hand' }"
+                        title="抓手（H，按住空格临时切换）"
+                        @click="toggleHandTool"
+                      >
+                        抓手
+                      </button>
+                      <button
+                        type="button"
+                        class="edit-tool"
+                        :class="{ 'is-active': editTool === 'brush' }"
+                        title="画笔（B）"
+                        @click="editTool = 'brush'"
+                      >
+                        画笔
+                      </button>
+                      <button
+                        type="button"
+                        class="edit-tool"
+                        :class="{ 'is-active': editTool === 'eraser' }"
+                        title="橡皮（E）"
+                        @click="editTool = 'eraser'"
+                      >
+                        橡皮
+                      </button>
+                      <button
+                        type="button"
+                        class="edit-tool"
+                        :class="{ 'is-active': maskMode }"
+                        title="蒙板（Q）"
+                        @click="maskMode = !maskMode"
+                      >
+                        蒙板
+                      </button>
+                    </div>
+
+                    <div v-if="editTool === 'brush' && !maskMode" class="edit-colors">
+                      <button
+                        v-for="color in EDIT_COLORS"
+                        :key="color"
+                        type="button"
+                        class="edit-swatch"
+                        :class="{ 'is-active': editColor === color }"
+                        :style="{ background: color }"
+                        :title="color"
+                        @click="editColor = color"
+                      />
+                    </div>
+
+                    <label v-if="editTool !== 'hand'" class="edit-size">
+                      <span>大小</span>
+                      <input v-model.number="editSize" type="range" min="2" max="160" step="1" />
+                      <span class="edit-size-value">{{ editSize }}px</span>
+                    </label>
+
+                    <div class="edit-history">
+                      <button
+                        type="button"
+                        class="edit-mini"
+                        :disabled="!previewEdit.canUndo"
+                        @click="previewRef?.undoEdit()"
+                      >
+                        撤销
+                      </button>
+                      <button
+                        type="button"
+                        class="edit-mini"
+                        :disabled="!previewEdit.canRedo"
+                        @click="previewRef?.redoEdit()"
+                      >
+                        重做
+                      </button>
+                      <button
+                        type="button"
+                        class="edit-mini"
+                        :disabled="maskMode ? !previewEdit.hasMask : !previewEdit.hasStrokes"
+                        @click="previewRef?.clearEdit()"
+                      >
+                        清空
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <PreviewPane
+                  ref="previewRef"
+                  :item="current"
+                  :media="media"
+                  :index="index"
+                  :upstream="upstreamFirst"
+                  :comparing="comparing"
+                  :text="resultText"
+                  :editing="editing"
+                  :tool="editTool"
+                  :color="editColor"
+                  :size="editSize"
+                  :pan-mode="handMode"
+                  :mask-mode="maskMode"
+                  @select="emit('select', $event)"
+                  @frame="onExportFrame"
+                  @edit-state="onEditState"
+                />
+              </div>
 
               <CropEditor
                 v-else-if="mode === 'crop' && isImage"
@@ -252,7 +420,8 @@
 </template>
 
 <script setup>
-import { computed, inject, nextTick, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { baseName } from "../../utils/image";
 import PreviewPane from "./editors/PreviewPane.vue";
 import CropEditor from "./editors/CropEditor.vue";
 import ExpandEditor from "./editors/ExpandEditor.vue";
@@ -278,6 +447,9 @@ const previewRef = ref(null);
 const previewFullscreen = computed(() => !!previewRef.value?.fullscreen);
 const previewBusy = computed(() => !!previewRef.value?.exporting);
 const previewIsVideo = computed(() => current.value?.kind === "video");
+// 蒙板状态由 PreviewPane 持有，右侧按钮通过 ref 读取/操作
+const previewMaskVisible = computed(() => previewRef.value?.maskVisible !== false);
+const previewMaskInverted = computed(() => !!previewRef.value?.maskInverted);
 const FRAME_ACTIONS = [
   { key: "first", label: "导出首帧" },
   { key: "current", label: "导出当前帧" },
@@ -374,6 +546,194 @@ function toggleCompare() {
   if (!canCompare.value) return;
   comparing.value = !comparing.value;
 }
+
+// ------------------------------------------------------------ 预览图上直接编辑
+const editing = ref(false);
+const editTool = ref("brush");
+const editColor = ref("#000000");
+const editSize = ref(24);
+// 蒙板模式：落笔写入红色蒙板层
+const maskMode = ref(false);
+const EDIT_COLORS = ["#000000", "#ffffff", "#ff3b30", "#ffcc00", "#34c759", "#0a84ff"];
+const previewEdit = reactive({ canUndo: false, canRedo: false, hasStrokes: false, hasMask: false });
+// 按住空格临时进入抓手
+const spaceHand = ref(false);
+const handMode = computed(
+  () => editing.value && (editTool.value === "hand" || spaceHand.value)
+);
+// 再按一次 H 回到之前的画笔工具
+const lastDrawTool = ref("brush");
+watch(editTool, (tool) => {
+  if (tool !== "hand") lastDrawTool.value = tool;
+});
+
+function toggleHandTool() {
+  editTool.value = editTool.value === "hand" ? lastDrawTool.value : "hand";
+}
+
+function onEditState(state) {
+  Object.assign(previewEdit, state);
+}
+
+function toggleEdit() {
+  if (!isImage.value) return;
+  if (!editing.value) comparing.value = false;
+  editing.value = !editing.value;
+}
+
+async function applyEdit() {
+  const result = await previewRef.value?.exportEdit();
+  if (!result) return;
+  const old = current.value;
+  if (!old) return;
+  const base = baseName(old.name || "image");
+  // 之前的原图（没有 alpha 的底图），用于再次编辑与取消蒙板
+  const oldOriginal = old.original || {
+    url: old.url,
+    ref: old.ref,
+    name: old.name,
+    thumbUrl: old.thumbUrl,
+  };
+  let item = old;
+  try {
+    let painted = null;
+    if (result.blob) painted = await graph.uploadAsset(result.blob, `${base}-edit.png`);
+
+    if (result.maskBlob && result.maskedBlob) {
+      const maskItem = await graph.uploadAsset(result.maskBlob, `${base}-mask.png`);
+      const maskedItem = await graph.uploadAsset(result.maskedBlob, `${base}-masked.png`);
+      if (maskedItem) {
+        // 和 ComfyUI 一样，应用后节点直接载入带蒙板的合成图；原图留作再次编辑
+        item = {
+          ...maskedItem,
+          original: painted
+            ? { url: painted.url, ref: painted.ref, name: painted.name, thumbUrl: painted.thumbUrl }
+            : oldOriginal,
+          mask: maskItem ? { url: maskItem.url, ref: maskItem.ref, name: maskItem.name } : null,
+          maskInverted: !!result.maskInverted,
+        };
+      }
+    } else if (result.maskTouched) {
+      // 蒙板被清空：图像恢复成不带 alpha 的原图
+      const restored = painted || oldOriginal;
+      item = {
+        ...old,
+        url: restored.url,
+        ref: restored.ref,
+        name: restored.name,
+        thumbUrl: restored.thumbUrl,
+        original: null,
+        mask: null,
+        maskInverted: false,
+      };
+    } else if (painted) {
+      item = { ...painted, original: null, mask: null, maskInverted: false };
+    }
+    if (item !== old) graph.replaceMediaItem(props.nodeId, props.index, { ...item, id: old.id });
+  } catch (error) {
+    console.warn("[Infinite-Canvas] 保存编辑失败", error);
+  }
+  editing.value = false;
+  maskMode.value = false;
+}
+
+// 编辑时拦截 Ctrl/⌘+Z，别让画布的撤销快捷键吃掉
+function shieldKey(event) {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+function isTypingTarget(target) {
+  if (!target) return false;
+  const tag = String(target.tagName || "").toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!target.isContentEditable;
+}
+
+function onEditKeyDown(event) {
+  if (!editing.value) return;
+  const key = String(event.key || "").toLowerCase();
+
+  if (event.ctrlKey || event.metaKey) {
+    if (key === "z") {
+      shieldKey(event);
+      if (event.shiftKey) previewRef.value?.redoEdit();
+      else previewRef.value?.undoEdit();
+    } else if (key === "y") {
+      shieldKey(event);
+      previewRef.value?.redoEdit();
+    } else if (key === "0") {
+      // Ctrl/⌘+0：回到适应窗口
+      shieldKey(event);
+      previewRef.value?.resetView();
+    }
+    return;
+  }
+
+  // 输入框里不抢普通字母
+  if (isTypingTarget(event.target)) return;
+
+  if (key === "h") {
+    shieldKey(event);
+    toggleHandTool();
+  } else if (key === "b") {
+    shieldKey(event);
+    editTool.value = "brush";
+  } else if (key === "e") {
+    shieldKey(event);
+    editTool.value = "eraser";
+  } else if (key === "q") {
+    shieldKey(event);
+    maskMode.value = !maskMode.value;
+  } else if (key === "[" || key === "]") {
+    shieldKey(event);
+    const next = editSize.value + (key === "]" ? 2 : -2);
+    editSize.value = Math.min(160, Math.max(2, next));
+  } else if (key === " " || key === "spacebar") {
+    // 按住空格临时抓手
+    shieldKey(event);
+    spaceHand.value = true;
+  }
+}
+
+function onEditKeyUp(event) {
+  if (event.key === " " || event.key === "Spacebar") spaceHand.value = false;
+}
+
+function onWindowBlur() {
+  spaceHand.value = false;
+}
+
+watch(editing, (on) => {
+  if (on) {
+    window.addEventListener("keydown", onEditKeyDown, true);
+    window.addEventListener("keyup", onEditKeyUp, true);
+    window.addEventListener("blur", onWindowBlur);
+  } else {
+    window.removeEventListener("keydown", onEditKeyDown, true);
+    window.removeEventListener("keyup", onEditKeyUp, true);
+    window.removeEventListener("blur", onWindowBlur);
+    spaceHand.value = false;
+    maskMode.value = false;
+  }
+});
+
+watch(
+  () => props.index,
+  () => {
+    editing.value = false;
+  }
+);
+
+// 切到裁切/扩图等模式时退出编辑，避免快捷键还挂在预览上
+watch(mode, () => {
+  editing.value = false;
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onEditKeyDown, true);
+  window.removeEventListener("keyup", onEditKeyUp, true);
+  window.removeEventListener("blur", onWindowBlur);
+});
 
 const zipRefs = computed(() =>
   props.media
@@ -495,6 +855,7 @@ function closePanel() {
   panelOpen.value = false;
   showContent.value = false;
   comparing.value = false;
+  editing.value = false;
   mode.value = "preview";
 }
 
@@ -503,6 +864,7 @@ function openPreviewPanel() {
   panelOpen.value = true;
   showContent.value = false;
   comparing.value = false;
+  editing.value = false;
   mode.value = "preview";
   nextTick(() => {
     showContent.value = true;
@@ -750,6 +1112,140 @@ async function onMerge(blob, filename) {
   background: var(--c-surface-2);
 }
 
+/* 预览 + 顶部编辑工具栏（工具栏浮在预览上方，不占布局高度） */
+.preview-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.edit-top {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 4;
+  padding: 8px 10px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--c-surface-3) 90%, transparent);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.edit-tools,
+.edit-history {
+  display: flex;
+  gap: 6px;
+}
+
+.edit-tool {
+  width: 60px;
+  height: 28px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 8px;
+  background: var(--c-surface);
+  color: var(--c-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.edit-tool.is-active {
+  border-color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 16%, transparent);
+  color: var(--c-accent);
+}
+
+.edit-colors {
+  display: flex;
+  gap: 8px;
+}
+
+.edit-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--c-border-strong);
+  cursor: pointer;
+}
+
+.edit-swatch.is-active {
+  border-color: var(--c-accent);
+}
+
+.edit-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 180px;
+  min-width: 150px;
+  color: var(--c-muted);
+  font-size: 12px;
+}
+
+.edit-size input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.edit-size-value {
+  width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.edit-mini {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 8px;
+  background: var(--c-surface);
+  color: var(--c-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.edit-mini:hover:not(:disabled) {
+  color: var(--c-text);
+  border-color: var(--c-accent);
+}
+
+.edit-mini:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.apply-btn {
+  width: 100%;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-yellow);
+  background: var(--accent-yellow);
+  color: var(--c-on-accent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.apply-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .asset-empty {
   margin: auto;
   color: var(--c-muted);
@@ -860,7 +1356,7 @@ async function onMerge(blob, filename) {
   line-height: 1.7;
 }
 
-/* 对比开关：放在预览提示下方 */
+/* 对比开关：放在预览工具列里 */
 .side-compare {
   display: flex;
   align-items: center;
@@ -868,7 +1364,7 @@ async function onMerge(blob, filename) {
   gap: 6px;
   width: 100%;
   height: 34px;
-  margin-top: 10px;
+  margin-top: 0;
   border: 1px solid color-mix(in srgb, var(--c-accent) 60%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--c-accent) 8%, transparent);
