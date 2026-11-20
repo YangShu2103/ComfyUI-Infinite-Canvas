@@ -11,6 +11,7 @@
     }"
     @wheel.prevent="onWheel"
     @pointerdown="onPointerDown"
+    @pointermove="onStagePointerMove"
     @contextmenu.prevent
   >
     <CompareView
@@ -61,6 +62,14 @@
       :class="{ 'is-active': maskMode, 'is-invisible': !maskVisible }"
       @pointerdown.stop="onPaintPointerDown"
       @contextmenu.prevent
+    />
+
+    <!-- 画笔光标：跟随指针显示当前笔刷大小，改滑块时实时变化 -->
+    <div
+      v-if="showBrushRing"
+      class="brush-ring"
+      :class="{ 'is-mask': maskMode, 'is-eraser': tool === 'eraser' && !maskMode }"
+      :style="brushRingStyle"
     />
 
     <!-- 视频截帧 / 全屏按钮由右侧工具栏调用 -->
@@ -172,6 +181,36 @@ const imageSrc = computed(() => {
   if (props.editing && item.original?.url) return item.original.url;
   return item.url;
 });
+
+// 画笔光标位置（相对预览区），改笔刷大小时圈会实时变化
+const brushCursor = reactive({ x: 0, y: 0, visible: false });
+const showBrushRing = computed(
+  () =>
+    props.editing &&
+    isImage.value &&
+    !!props.item &&
+    !props.comparing &&
+    !props.panMode &&
+    brushCursor.visible
+);
+const brushRingStyle = computed(() => {
+  const d = Math.max(4, props.size);
+  return {
+    width: `${d}px`,
+    height: `${d}px`,
+    left: `${brushCursor.x}px`,
+    top: `${brushCursor.y}px`,
+  };
+});
+
+function onStagePointerMove(event) {
+  if (!props.editing || !isImage.value || props.comparing) return;
+  const rect = stageEl.value?.getBoundingClientRect();
+  if (!rect) return;
+  brushCursor.x = event.clientX - rect.left;
+  brushCursor.y = event.clientY - rect.top;
+  brushCursor.visible = true;
+}
 
 watch(
   () => props.item && props.item.id,
@@ -302,6 +341,7 @@ function resetEditState() {
   maskBase.value = null;
   maskWhite = null;
   maskDirty = false;
+  brushCursor.visible = false;
   emit("edit-state", { canUndo: false, canRedo: false, hasStrokes: false, hasMask: false });
 }
 
@@ -903,6 +943,28 @@ defineExpose({
 
 .paint-layer.is-hand:active {
   cursor: grabbing;
+}
+
+/* 画笔光标：只标出笔刷范围，不接收指针事件 */
+.brush-ring {
+  position: absolute;
+  z-index: 4;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.brush-ring.is-eraser {
+  border-style: dashed;
+}
+
+.brush-ring.is-mask {
+  border-color: #ff6b60;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 0 10px rgba(255, 59, 48, 0.35);
 }
 
 .preview-stage > img {

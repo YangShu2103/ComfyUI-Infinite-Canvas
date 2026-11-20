@@ -322,7 +322,14 @@
 
                     <label v-if="editTool !== 'hand'" class="edit-size">
                       <span>大小</span>
-                      <input v-model.number="editSize" type="range" min="2" max="160" step="1" />
+                      <input
+                        v-model.number="editSize"
+                        type="range"
+                        min="2"
+                        max="160"
+                        step="1"
+                        @pointerup="$event.target.blur()"
+                      />
                       <span class="edit-size-value">{{ editSize }}px</span>
                     </label>
 
@@ -645,8 +652,13 @@ function shieldKey(event) {
 
 function isTypingTarget(target) {
   if (!target) return false;
+  if (target.isContentEditable) return true;
   const tag = String(target.tagName || "").toUpperCase();
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!target.isContentEditable;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag !== "INPUT") return false;
+  // 滑块、复选、单选、按钮不输入文字，快捷键照常生效
+  const type = String(target.type || "text").toLowerCase();
+  return !["range", "checkbox", "radio", "button", "color", "file"].includes(type);
 }
 
 function onEditKeyDown(event) {
@@ -671,6 +683,11 @@ function onEditKeyDown(event) {
 
   // 输入框里不抢普通字母
   if (isTypingTarget(event.target)) return;
+
+  // 滑块上按快捷键时顺手移除焦点，避免看起来像被选中
+  if (event.target instanceof HTMLInputElement && event.target.type === "range") {
+    event.target.blur();
+  }
 
   if (key === "h") {
     shieldKey(event);
