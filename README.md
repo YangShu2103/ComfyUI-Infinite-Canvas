@@ -1,5 +1,7 @@
 # ComfyUI-Infinite-Canvas
 
+> **许可提示**：本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，允许个人使用、修改与非商业分发，**禁止任何商业用途**（包括封装成付费产品 / 插件 / 会员服务）。商业使用需获得作者书面授权，详见 [NOTICE.md](NOTICE.md)。
+
 把 ComfyUI 变成一块「无限画布」：每个节点绑定一条工作流，在画布上直接跑图、出视频，产出的素材还能拖到下一个节点继续用。
 
 前端是 Vue 3 + Vue Flow，后端是一个轻量 aiohttp 扩展，只负责托管页面、读写配置、代理执行与缩略图生成。
@@ -202,4 +204,13 @@ ComfyUI-Infinite-Canvas/
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 YangShu2103
+自 **v0.5.2** 起，本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)：
+
+- **允许**：个人学习 / 研究 / 娱乐、非商业组织使用、修改与二开、非商业分发（需保留协议与版权声明）
+- **禁止**：任何商业用途，包括将本项目或其衍生作品封装进付费产品、付费插件、付费会员、代部署收费，或售卖源码与构建产物
+- **商业授权**：商业使用请联系作者 [@YangShu2103](https://github.com/YangShu2103) 获取书面授权
+
+v0.5.1 及更早版本按 MIT 发布，已获得的副本仍适用 MIT，无法追溯撤回。
+完整说明见 [NOTICE.md](NOTICE.md)。
+
+© 2026 YangShu2103
