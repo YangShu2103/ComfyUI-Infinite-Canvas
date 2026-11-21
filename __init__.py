@@ -707,10 +707,10 @@ def _clean_fields(raw, workflow):
         }
         if field_type == "select":
             options = item.get("options")
+            # 选项就是提交给 ComfyUI 的字面量，不能截断或丢弃，
+            # 否则下拉框里的值和实际模型文件名对不上
             entry["options"] = (
-                [str(option)[:40] for option in options][:60]
-                if isinstance(options, list)
-                else []
+                [str(option) for option in options] if isinstance(options, list) else []
             )
         if field_type in ("number", "slider", "random"):
             for num_key in _FIELD_NUM_KEYS:
