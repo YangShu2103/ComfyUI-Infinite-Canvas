@@ -217,25 +217,28 @@
     >
       <!-- 采样中的实时预览：KJNodes Model Preview Override 推来的帧 -->
       <template v-if="previewFrame">
-        <video
-          v-if="previewFrame.mime === 'video/mp4'"
-          class="node-preview-media"
-          :src="previewFrame.url"
-          autoplay
-          muted
-          loop
-          playsinline
-        />
-        <img
-          v-else
-          class="node-preview-media"
-          :src="previewFrame.url"
-          alt="实时预览"
-          draggable="false"
-        />
-        <div class="node-preview-hud">
-          <span class="node-preview-badge">实时预览</span>
-          <span v-if="progressSub" class="node-preview-step">{{ progressSub }}</span>
+        <!-- 和普通素材一样用居中卡片呈现，而不是铺满整个节点 -->
+        <div class="node-preview-card">
+          <video
+            v-if="previewFrame.mime === 'video/mp4'"
+            class="node-preview-media"
+            :src="previewFrame.url"
+            autoplay
+            muted
+            loop
+            playsinline
+          />
+          <img
+            v-else
+            class="node-preview-media"
+            :src="previewFrame.url"
+            alt="实时预览"
+            draggable="false"
+          />
+          <div class="node-preview-hud">
+            <span class="node-preview-badge">实时预览</span>
+            <span v-if="progressSub" class="node-preview-step">{{ progressSub }}</span>
+          </div>
         </div>
       </template>
       <div v-else-if="runState?.status === 'error'" class="node-progress-body">
@@ -2471,13 +2474,31 @@ async function run() {
   display: none;
 }
 
+/* 有实时预览时留出与素材区一致的 10px 内边距 */
+.node-progress.has-preview {
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+/* 实时预览沿用普通素材卡片的居中样式：84% 宽、圆角、描边与投影 */
+.node-preview-card {
+  position: relative;
+  width: 84%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--c-line);
+  border-radius: 14px;
+  background: var(--c-input-bg);
+  box-shadow: 0 10px 24px var(--c-shadow);
+}
+
 .node-preview-media {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  background: var(--c-panel-2);
+  object-fit: cover;
+  pointer-events: none;
 }
 
 .node-preview-hud {
