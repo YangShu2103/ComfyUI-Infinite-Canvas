@@ -73,6 +73,8 @@
       :open="contextMenu.open"
       :x="contextMenu.x"
       :y="contextMenu.y"
+      :items="contextMenuItems"
+      :header="contextMenuHeader"
       @pick="onContextPick"
       @close="closeContextMenu"
     />
@@ -98,6 +100,7 @@ import { useGraph } from "./composables/useGraph.js";
 import { useCanvas } from "./composables/useCanvas.js";
 import { FILE_ASSET_DRAG_TYPE, PROMPT_DRAG_TYPE, useLibrary } from "./composables/useLibrary.js";
 import { useTheme } from "./composables/useTheme.js";
+import { saveBlob } from "./utils/download";
 
 const { canvasGridColor } = useTheme();
 // 拖提示词落到普通节点：优先交给节点自己的替换通道（和双击写提示词同一条路）
@@ -165,6 +168,8 @@ const {
   toggleEdgeFlow,
   canvasPoint,
   duplicateNode,
+  duplicateNodeCopy,
+  deleteNode,
   spawnMediaNodeAt,
   spawnItemsNodeAt,
   spawnPromptNodeAt,
@@ -460,9 +465,52 @@ function onCutKeyDown(event) {
 }
 
 // 右键画布空白处：在鼠标位置弹出节点菜单。落在节点 / 面板 / 输入框上的右键保持原样
-const contextMenu = ref({ open: false, x: 0, y: 0, point: { x: 0, y: 0 } });
+const contextMenu = ref({ open: false, x: 0, y: 0, nodeId: "", point: { x: 0, y: 0 } });
+// 节点改名请求：由节点组件监听后打开左上角输入框
+const renameRequest = ref("");
 const CONTEXT_MENU_WIDTH = 176;
-const CONTEXT_MENU_HEIGHT = 92;
+const CONTEXT_MENU_HEIGHT = 120;
+const CONTEXT_MENU_NODE_HEIGHT = 190;
+
+// 菜单标题：区分「新建节点」和「操作某个节点」
+const contextMenuHeader = computed(() => {
+  const id = contextMenu.value.nodeId;
+  if (!id) return "新建节点";
+  return nodes.value.find((item) => item.id === id)?.data?.title || "节点";
+});
+
+// 菜单项：有 nodeId 时是普通节点菜单，否则是画布空白处菜单
+const contextMenuItems = computed(() => {
+  const id = contextMenu.value.nodeId;
+  if (!id) {
+    return [
+      { key: "prompt", label: "提示词节点", icon: ["M12 5v14", "M5 12h14"] },
+      {
+        key: "preprocess",
+        label: "预处理节点",
+        icon: ["M12 3l9 5-9 5-9-5 9-5Z", "M3 14l9 5 9-5"],
+      },
+    ];
+  }
+  const node = nodes.value.find((item) => item.id === id);
+  const count = (node?.data?.media || []).filter((item) => item.ref?.filename).length;
+  return [
+    { key: "rename", label: "重命名", icon: ["M4 20h4L20 8l-4-4L4 16v4Z"] },
+    { key: "copyNode", label: "复制节点", icon: ["M9 9h10v10H9z", "M5 15V5h10"] },
+    {
+      key: "deleteNode",
+      label: "删除节点",
+      danger: true,
+      icon: ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13"],
+    },
+    {
+      key: "download",
+      label: count > 1 ? "打包下载资产" : "下载资产",
+      disabled: count === 0,
+      icon: ["M12 3v12", "M7 11l5 5 5-5", "M4 20h16"],
+    },
+  ];
+});
 
 // macOS 上 Ctrl + 左键会被当成右键，划线时要把右键菜单压掉
 function onContextMenu(event) {
@@ -471,20 +519,28 @@ function onContextMenu(event) {
     return;
   }
   const target = event.target;
+  if (!(target instanceof Element)) return;
+  // 编辑器、输入框、面板、连线上的右键保留原生行为
   if (
-    target instanceof Element &&
     target.closest(
-      ".vue-flow__node, .vue-flow__handle, .vue-flow__edge, .node-panel, .library-dock, .canvas-tabbar, .canvas-menu, input, textarea, select, [contenteditable='true']"
+      ".node-panel, .library-dock, .canvas-tabbar, .canvas-menu, .vue-flow__handle, .vue-flow__edge, input, textarea, select, [contenteditable='true']"
     )
   ) {
     return;
   }
+  // 普通节点用节点菜单；预处理 / 文本节点保持原生右键
+  const nodeEl = target.closest(".demo-node");
+  const wrapper = nodeEl?.closest(".vue-flow__node");
+  if (!wrapper && target.closest(".vue-flow__node")) return;
   event.preventDefault();
   // 菜单不能超出窗口，靠近边缘时往回收
+  const nodeId = wrapper?.dataset.id || "";
+  const menuHeight = nodeId ? CONTEXT_MENU_NODE_HEIGHT : CONTEXT_MENU_HEIGHT;
   contextMenu.value = {
     open: true,
+    nodeId,
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH)),
-    y: Math.max(8, Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight)),
     point: canvasPoint(event.clientX, event.clientY),
   };
 }
@@ -496,13 +552,52 @@ function closeContextMenu() {
 
 function onContextPick(key) {
   const point = contextMenu.value.point;
+  const nodeId = contextMenu.value.nodeId;
   closeContextMenu();
+  if (nodeId) {
+    if (key === "rename") renameRequest.value = nodeId;
+    else if (key === "copyNode") duplicateNodeCopy(nodeId);
+    else if (key === "deleteNode") deleteNode(nodeId);
+    else if (key === "download") downloadNodeAssets(nodeId);
+    return;
+  }
   if (key === "preprocess") {
     spawnPreprocessNode(point);
     return;
   }
   if (key === "prompt") {
     spawnPromptNode(point);
+  }
+}
+
+// 右键菜单里的下载：单个资产直接下载，多个交给后端打包成 zip
+async function downloadNodeAssets(nodeId) {
+  const node = nodes.value.find((item) => item.id === nodeId);
+  const media = (node?.data?.media || []).filter((item) => item.ref?.filename);
+  if (!media.length) return;
+  const name = node?.data?.title || "assets";
+  try {
+    if (media.length === 1) {
+      const item = media[0];
+      const response = await fetch(item.url);
+      if (!response.ok) throw new Error("下载失败");
+      saveBlob(await response.blob(), item.name || item.ref.filename);
+      return;
+    }
+    const refs = media.map((item) => ({
+      filename: item.ref.filename,
+      subfolder: item.ref.subfolder || "",
+      type: item.ref.type || "output",
+    }));
+    const response = await fetch("/infinite_canvas/api/package", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refs, name }),
+    });
+    if (!response.ok) throw new Error("打包失败");
+    saveBlob(await response.blob(), `${name}.zip`);
+  } catch (error) {
+    console.warn("[Infinite-Canvas] 下载资产失败", error);
   }
 }
 
@@ -563,6 +658,7 @@ provide("canvasGraph", {
   captureUndo,
   undo,
   renameNode,
+  renameRequest,
 });
 
 // 画布管理：列表 / 切换 / 自动保存

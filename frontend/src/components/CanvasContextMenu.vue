@@ -14,11 +14,29 @@
         @contextmenu.prevent
         @mousedown.stop
       >
-        <button class="ctx-item" type="button" @click="pick('prompt')">
-          <span>提示词节点</span>
-        </button>
-        <button class="ctx-item" type="button" @click="pick('preprocess')">
-          <span>预处理节点</span>
+        <div v-if="header" class="ctx-head" :title="header">{{ header }}</div>
+        <button
+          v-for="item in items"
+          :key="item.key"
+          class="ctx-item"
+          :class="{ 'is-danger': item.danger }"
+          type="button"
+          :disabled="item.disabled"
+          @click="pick(item.key)"
+        >
+          <svg v-if="item.icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path
+              v-for="(d, k) in item.icon"
+              :key="k"
+              :d="d"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span>{{ item.label }}</span>
         </button>
       </div>
     </div>
@@ -32,6 +50,9 @@ const props = defineProps({
   open: { type: Boolean, default: false },
   x: { type: Number, default: 0 },
   y: { type: Number, default: 0 },
+  items: { type: Array, default: () => [] },
+  // 菜单顶部的语境标识：空白处是「新建节点」，节点上是节点名称
+  header: { type: String, default: "" },
 });
 const emit = defineEmits(["pick", "close"]);
 
@@ -79,11 +100,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeyDown, true));
   backdrop-filter: blur(10px);
 }
 
+.ctx-head {
+  padding: 4px 10px 7px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--c-line);
+  color: var(--c-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ctx-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
   padding: 9px 10px;
   border: 0;
@@ -93,6 +124,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeyDown, true));
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+}
+
+.ctx-item svg {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.ctx-item.is-danger {
+  color: var(--c-danger);
+}
+
+.ctx-item.is-danger svg {
+  opacity: 0.9;
 }
 
 .ctx-item:not(:disabled):hover {

@@ -12,6 +12,7 @@
   >
     <!-- 节点名称：左上角，可单击改名；预处理派发的节点在名字前带任务角标 -->
     <NodeTitle
+      ref="titleRef"
       class="node-title-abs"
       :title="displayTitle"
       :badge="data.fromPreprocess ? data.taskLabel || '预处理' : ''"
@@ -319,6 +320,7 @@
         v-if="panelOpen"
         ref="panelEl"
         class="node-panel"
+        @pointerdown="onPanelPointerDown"
         @mousedown.stop
         @mouseup.stop
         @click.stop
@@ -702,17 +704,28 @@
         </div>
 
         <div class="panel-row">
-          <button
-            class="panel-run"
-            :class="{ 'is-stop': isBusy || isWaiting }"
-            type="button"
-            :disabled="isUploading"
-            @click.stop="onRunClick"
-          >
-            {{
-              isUploading ? "上传中" : isBusy || isWaiting ? "中断" : "运行"
-            }}
-          </button>
+          <div class="panel-actions">
+            <button
+              v-if="ownMedia.length && !isBusy && !isWaiting && !isUploading"
+              class="panel-rerun"
+              type="button"
+              title="先清空本节点素材，再原地重新生成"
+              @click.stop="rerun"
+            >
+              重新运行
+            </button>
+            <button
+              class="panel-run"
+              :class="{ 'is-stop': isBusy || isWaiting }"
+              type="button"
+              :disabled="isUploading"
+              @click.stop="onRunClick"
+            >
+              {{
+                isUploading ? "上传中" : isBusy || isWaiting ? "中断" : "运行"
+              }}
+            </button>
+          </div>
         </div>
         <div v-if="runError" class="panel-error">{{ runError }}</div>
       </div>
@@ -1268,6 +1281,17 @@ function removeNode() {
 
 const graph = inject("canvasGraph");
 
+// 右键菜单点了「重命名」：打开左上角的名称输入框
+const titleRef = ref(null);
+watch(
+  () => graph?.renameRequest?.value,
+  (id) => {
+    if (!id || id !== props.id) return;
+    graph.renameRequest.value = "";
+    titleRef.value?.start();
+  }
+);
+
 // 上传失败后点卡片上的"重试"，用还留在内存里的原始文件重新上传
 function retryItem(item) {
   graph?.retryUpload?.(item);
@@ -1482,6 +1506,31 @@ function onPanelFocusOut(event) {
   leaveHover();
 }
 
+// 文本框可以拖右下角改大小：松手落在画布上时，浏览器会把 click 派给共同祖先，
+// 触发 Vue Flow 的空白处点击取消选中，参数面板就会收回。这里拦掉随后的一次 click。
+function suppressPanelClick(event) {
+  window.removeEventListener("click", suppressPanelClick, true);
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+function onPanelPointerDown(event) {
+  if (!(event.target instanceof HTMLTextAreaElement)) return;
+  window.addEventListener("click", suppressPanelClick, true);
+  window.addEventListener(
+    "pointerup",
+    (upEvent) => {
+      // 松手还在面板里就是普通点击，撤销拦截
+      if (panelEl.value?.contains(upEvent.target)) {
+        window.removeEventListener("click", suppressPanelClick, true);
+        return;
+      }
+      setTimeout(() => window.removeEventListener("click", suppressPanelClick, true), 0);
+    },
+    { once: true, capture: true }
+  );
+}
+
 // 展开时才定位到上次选中的工作流
 watch(panelHover, (on) => {
   if (on) nextTick(() => revealActiveWorkflow());
@@ -1490,6 +1539,7 @@ watch(panelHover, (on) => {
 onBeforeUnmount(() => {
   clearTimeout(leaveTimer);
   window.removeEventListener("mousemove", onPointerMove);
+  window.removeEventListener("click", suppressPanelClick, true);
 });
 
 // 列表加载完把上次选中的工作流滚到可见位置
@@ -2050,6 +2100,19 @@ function waitUpstreamsIdle(targetId) {
       }
     }, 300);
   });
+}
+
+// 重新运行：先清空自身素材，让 run() 原地回填，避免每次抽卡都派生新的下游节点
+function rerun() {
+  if (!props.data.workflow) {
+    runError.value = "先在左侧选择工作流";
+    return;
+  }
+  if (isBusy.value || isWaiting.value || isUploading.value) return;
+  closePreview();
+  props.data.media = [];
+  props.data.index = 0;
+  run();
 }
 
 // 运行：有自身素材时立刻派生下游节点承接产物（空节点即出现），
@@ -3637,8 +3700,33 @@ async function run() {
   margin: 0;
 }
 
-.panel-run {
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
+}
+
+.panel-rerun {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--accent-yellow);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent-yellow);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.panel-rerun:hover {
+  background: color-mix(in srgb, var(--accent-yellow) 16%, transparent);
+}
+
+.panel-run {
   height: 28px;
   padding: 0 18px;
   border: 1px solid var(--accent-yellow);

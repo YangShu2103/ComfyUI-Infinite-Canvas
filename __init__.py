@@ -33,6 +33,8 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 _NODE_ROOT = os.path.dirname(os.path.abspath(__file__))
 _FRONTEND_DIST = os.path.join(_NODE_ROOT, "frontend", "dist")
+# 节点定义的下拉选项按「地址|类名」缓存，配置面板反复打开时不再请求 ComfyUI
+_NODE_INPUTS_CACHE = {}
 
 # 插件的持久化数据（工作流、画布、画布设置、提示词库、缩略图缓存）统一放在
 # ComfyUI 的用户目录下，节点重装/更新不会丢
@@ -1877,6 +1879,55 @@ def register_routes(app):
                 return web.json_response({"loras": [str(name) for name in spec[0]]})
         return web.json_response({"loras": []})
 
+    async def list_node_inputs(request):
+        """节点定义里的下拉选项：用于工作流配置时自动填充 select 字段"""
+        class_type = str(request.query.get("class_type", "") or "").strip()
+        if not class_type:
+            return web.json_response({"options": {}, "error": "缺少 class_type"}, status=400)
+        origin = _comfy_base(request)
+        cache_key = f"{origin}|{class_type}"
+        if cache_key in _NODE_INPUTS_CACHE:
+            return web.json_response({"options": _NODE_INPUTS_CACHE[cache_key]})
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{origin}/object_info/{quote(class_type)}") as response:
+                    if response.status != 200:
+                        return web.json_response({"options": {}, "error": "节点类型不存在"})
+                    body = await response.json(content_type=None)
+        except aiohttp.ClientError as exc:
+            return web.json_response(
+                {"options": {}, "error": f"连接 ComfyUI 失败: {exc}"}, status=502
+            )
+
+        info = (body or {}).get(class_type)
+        # 少数节点包的返回键和请求类名不完全一致，只有一个节点时兜底取它
+        if not isinstance(info, dict):
+            values = [value for value in (body or {}).values() if isinstance(value, dict)]
+            info = values[0] if len(values) == 1 else {}
+        groups = info.get("input") or {}
+        options = {}
+        for group in ("required", "optional"):
+            for key, spec in (groups.get(group) or {}).items():
+                if not isinstance(spec, list) or not spec:
+                    continue
+                first = spec[0]
+                # 选项既可能是列表，也可能是「显示名 -> 参数」的字典；
+                # 新版输入定义还会写成 ["COMBO", {"options": [...]}]
+                if isinstance(first, list):
+                    options[key] = [str(item) for item in first]
+                elif isinstance(first, dict):
+                    options[key] = [str(item) for item in first.keys()]
+                elif isinstance(first, str):
+                    meta = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+                    values = meta.get("options")
+                    if isinstance(values, list):
+                        options[key] = [str(item) for item in values]
+                    elif isinstance(values, dict):
+                        options[key] = [str(item) for item in values.keys()]
+        if options:
+            _NODE_INPUTS_CACHE[cache_key] = options
+        return web.json_response({"options": options})
+
     async def execute_workflow(request):
         """按选中的工作流跑一次：写入素材/暴露参数后提交 ComfyUI，回传产物"""
         try:
@@ -2082,6 +2133,7 @@ def register_routes(app):
             web.post(f"{API_PREFIX}/media", upload_media),
             web.delete(f"{API_PREFIX}/media/{{filename}}", delete_media),
             web.get(f"{API_PREFIX}/loras", list_loras),
+            web.get(f"{API_PREFIX}/node-inputs", list_node_inputs),
             web.post(f"{API_PREFIX}/package", package_media),
             web.get(f"{API_PREFIX}/canvases", list_canvases),
             web.post(f"{API_PREFIX}/canvases", create_canvas),

@@ -32,6 +32,8 @@ function commit() {
 function cancel() {
   editing.value = false;
 }
+
+defineExpose({ start });
 </script>
 
 <template>

@@ -70,7 +70,28 @@
         <!-- 提示词 -->
         <template v-if="panel === 'prompt'">
           <header class="lib-head">
-            <span class="lib-title">提示词</span>
+            <div class="lib-head-main">
+              <button
+                class="lib-pin"
+                :class="{ 'is-on': pinned }"
+                type="button"
+                :title="pinned ? '取消常驻' : '常驻面板'"
+                @click.stop="pinned = !pinned"
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                  <path d="M12 17v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  <path
+                    d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <span class="lib-title">提示词</span>
+            </div>
             <span class="lib-count">{{ filteredPrompts.length }} / {{ prompts.length }} 条</span>
           </header>
 
@@ -193,7 +214,28 @@
         <!-- 资产库 -->
         <template v-else-if="panel === 'asset'">
           <header class="lib-head">
-            <span class="lib-title">资产库</span>
+            <div class="lib-head-main">
+              <button
+                class="lib-pin"
+                :class="{ 'is-on': pinned }"
+                type="button"
+                :title="pinned ? '取消常驻' : '常驻面板'"
+                @click.stop="pinned = !pinned"
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                  <path d="M12 17v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  <path
+                    d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <span class="lib-title">资产库</span>
+            </div>
             <span class="lib-count" v-if="total">{{ assets.length }} / {{ total }}</span>
             <div class="lib-switch">
               <button
@@ -276,7 +318,28 @@
         <!-- 任务队列日志 -->
         <template v-else>
           <header class="lib-head">
-            <span class="lib-title">任务队列</span>
+            <div class="lib-head-main">
+              <button
+                class="lib-pin"
+                :class="{ 'is-on': pinned }"
+                type="button"
+                :title="pinned ? '取消常驻' : '常驻面板'"
+                @click.stop="pinned = !pinned"
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                  <path d="M12 17v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  <path
+                    d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <span class="lib-title">任务队列</span>
+            </div>
             <span class="lib-count" v-if="running.length || pending.length">
               {{ running.length }} 运行 · {{ pending.length }} 排队
             </span>
@@ -408,10 +471,25 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { FILE_ASSET_DRAG_TYPE, PROMPT_DRAG_TYPE, useLibrary } from "../composables/useLibrary.js";
 
-const { panel, targetCount, toggle, insertPrompt, captureActive } = useLibrary();
+const { panel, targetCount, toggle, close, insertPrompt, captureActive } = useLibrary();
+
+// 销钉：开启后点击画布不收起面板，状态记在浏览器本地
+const PIN_KEY = "infinite-canvas:dock-pinned";
+const pinned = ref(localStorage.getItem(PIN_KEY) !== "0");
+watch(pinned, (value) => {
+  localStorage.setItem(PIN_KEY, value ? "1" : "0");
+});
+
+function onDocPointerDown(event) {
+  if (!panel.value || pinned.value) return;
+  if (event.target instanceof Element && event.target.closest(".library-dock")) return;
+  close();
+}
+
+onMounted(() => document.addEventListener("pointerdown", onDocPointerDown, true));
 
 const footerHint = computed(() => {
   if (!targetCount.value) return "未选中节点时，双击条目会复制到剪贴板";
@@ -434,6 +512,7 @@ async function onPromptClick(item) {
 }
 
 onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
   clearTimeout(copyTimer);
   stopHistoryTimer();
   closeHistorySocket();
@@ -1380,6 +1459,40 @@ function placePreview(width, height, ready) {
   gap: 10px;
   padding: 12px 12px 8px;
   flex: 0 0 auto;
+}
+
+.lib-head-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lib-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  transition: color 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.lib-pin:hover {
+  color: var(--c-text);
+  background: var(--c-hover);
+}
+
+.lib-pin.is-on {
+  border-color: color-mix(in srgb, var(--accent-yellow) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-yellow) 14%, transparent);
+  color: var(--accent-yellow);
 }
 
 .lib-title {

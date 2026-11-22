@@ -434,6 +434,7 @@ import CropEditor from "./editors/CropEditor.vue";
 import ExpandEditor from "./editors/ExpandEditor.vue";
 import SplitEditor from "./editors/SplitEditor.vue";
 import MergeEditor from "./editors/MergeEditor.vue";
+import { saveBlob } from "../../utils/download";
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -889,17 +890,6 @@ function openPreviewPanel() {
 }
 
 defineExpose({ openPreviewPanel });
-
-function saveBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
 
 // 下载文件名以节点名称为准，扩展名沿用素材原名
 function downloadName(item) {

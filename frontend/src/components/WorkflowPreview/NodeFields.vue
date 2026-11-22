@@ -29,7 +29,7 @@
 
           <div v-if="entry.enabled" class="nf-detail">
             <div class="nf-row">
-              <select v-model="entry.type" class="nf-select">
+              <select v-model="entry.type" class="nf-select" @change="onTypeChange(entry)">
                 <option v-for="item in TYPE_OPTIONS" :key="item.value" :value="item.value">
                   {{ item.label }}
                 </option>
@@ -49,6 +49,7 @@
                   class="nf-input"
                   :placeholder="`选项 ${i + 1}`"
                   spellcheck="false"
+                  @input="entry.autoOptions = false"
                 />
                 <button
                   class="nf-remove"
@@ -206,12 +207,18 @@ function buildEntries() {
     const bbox = isBboxValue(value);
     if (!bbox && (Array.isArray(value) || (value !== null && typeof value === "object"))) continue;
     const field = saved.get(key);
-    let options = [...(field?.options || [])];
-    // 还没配选项时，用当前值作为第一个选项，省得面对空下拉框
-    if (!options.length && typeof value === "string" && value) options = [value];
+    const savedOptions = [...(field?.options || [])];
+    // 还没配选项时，用当前值作为第一个选项，省得面对空下拉框；
+    // autoOptions 标记这只是一个占位，等节点定义的选项拉回来后会整体替换
+    const autoOptions = !savedOptions.length;
+    let options = savedOptions;
+    if (autoOptions && typeof value === "string" && value) options = [value];
     list.push({
       key,
       enabled: !!field,
+      saved: !!field,
+      isString: typeof value === "string",
+      autoOptions,
       type: field?.type || guessType(value, key),
       label: field?.label || "",
       options,
@@ -226,10 +233,58 @@ function buildEntries() {
   lastPayload = JSON.stringify(collect());
 }
 
+// 节点定义里的下拉选项（ComfyUI object_info），打开面板时按类名拉一次
+const defOptions = ref({});
+// 只自动识别宽高比；模型 / 文件名这类选项动辄上百条，自动回填反而要手动删
+const AUTO_OPTION_KEYS = new Set(["aspect_ratio"]);
+// 只有分辨率选择器需要拉节点定义，其他节点不请求接口
+const AUTO_OPTION_TYPE = "ResolutionSelector";
+
+function fillOptions(entry) {
+  if (entry.type !== "select" || !entry.autoOptions) return;
+  const list = defOptions.value[entry.key];
+  if (!Array.isArray(list) || !list.length) return;
+  entry.options = list.map(String);
+  entry.autoOptions = false;
+}
+
+async function loadDefOptions() {
+  defOptions.value = {};
+  const type = String(props.nodeType || "");
+  if (type !== AUTO_OPTION_TYPE) return;
+  try {
+    const response = await fetch(
+      `/infinite_canvas/api/node-inputs?class_type=${encodeURIComponent(type)}`
+    );
+    if (!response.ok) return;
+    const data = await response.json();
+    const map = (data && data.options) || {};
+    defOptions.value = map;
+    // 未配置过的宽高比输入直接按「下拉框」呈现，选项也自动填好
+    for (const entry of entries.value) {
+      if (!AUTO_OPTION_KEYS.has(entry.key)) continue;
+      if (entry.saved || !entry.isString || !Array.isArray(map[entry.key])) continue;
+      entry.type = "select";
+    }
+    for (const entry of entries.value) {
+      if (AUTO_OPTION_KEYS.has(entry.key)) fillOptions(entry);
+    }
+  } catch (error) {
+    console.warn("[Infinite-Canvas] 读取节点下拉选项失败", error);
+  }
+}
+
+function onTypeChange(entry) {
+  fillOptions(entry);
+}
+
 watch(
-  () => [props.visible, props.nodeId],
+  () => [props.visible, props.nodeId, props.nodeType],
   ([visible]) => {
-    if (visible) buildEntries();
+    if (visible) {
+      buildEntries();
+      loadDefOptions();
+    }
   },
   { immediate: true }
 );
@@ -273,10 +328,12 @@ function collect() {
 }
 
 function addOption(entry) {
+  entry.autoOptions = false;
   entry.options.push("");
 }
 
 function removeOption(entry, index) {
+  entry.autoOptions = false;
   entry.options.splice(index, 1);
 }
 

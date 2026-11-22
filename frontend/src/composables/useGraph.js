@@ -1544,8 +1544,8 @@ export function useGraph() {
     pastePointer = null;
   }
 
-  function copySelection() {
-    const selected = flow.getSelectedNodes?.value || [];
+  function copyNodes(list) {
+    const selected = (list || []).filter(Boolean);
     if (!selected.length) return 0;
 
     clipboard = {
@@ -1616,7 +1616,11 @@ export function useGraph() {
     return clipboard.nodes.length;
   }
 
-  function pasteClipboard() {
+  function copySelection() {
+    return copyNodes(flow.getSelectedNodes?.value || []);
+  }
+
+  function pasteClipboard(options = {}) {
     if (!clipboard || !clipboard.nodes.length) return 0;
 
     captureUndo(true);
@@ -1638,7 +1642,11 @@ export function useGraph() {
     const boxH = box.maxY - box.minY;
     let offsetX = 0;
     let offsetY = 0;
-    if (pastePointer) {
+    // 右键「复制节点」等场景直接给固定偏移，不走鼠标落点
+    if (Number.isFinite(options.dx) || Number.isFinite(options.dy)) {
+      offsetX = Number(options.dx) || 0;
+      offsetY = Number(options.dy) || 0;
+    } else if (pastePointer) {
       // 鼠标在画布上：整块选区的中心对准光标
       const point = flow.screenToFlowCoordinate(pastePointer);
       offsetX = point.x - (box.minX + boxW / 2);
@@ -1710,6 +1718,24 @@ export function useGraph() {
     });
 
     return created.length;
+  }
+
+  // 右键「复制节点」：复用 Ctrl+C / Ctrl+V 的剪贴板路径，副本相对原位往右下错开
+  function duplicateNodeCopy(id, dx = 40, dy = 40) {
+    const node = nodes.value.find((item) => item.id === id);
+    if (!node) return 0;
+    if (!copyNodes([node])) return 0;
+    return pasteClipboard({ dx, dy });
+  }
+
+  // 右键「删除节点」：运行中 / 排队中的任务先中断，再连同连线一起删掉
+  function deleteNode(id) {
+    const node = nodes.value.find((item) => item.id === id);
+    if (!node) return;
+    captureUndo(true);
+    const status = runStates[id]?.status;
+    if (status === "running" || status === "queued") abortPrompt(id);
+    flow.removeNodes([id]);
   }
 
   // ------------------------------------------------------------ Shift + G 打包
@@ -3208,6 +3234,8 @@ export function useGraph() {
     createShot,
     canvasPoint,
     duplicateNode,
+    duplicateNodeCopy,
+    deleteNode,
     spawnMediaNodeAt,
     spawnItemsNodeAt,
     itemsFromRefs,
