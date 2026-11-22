@@ -678,7 +678,26 @@
           </div>
         </div>
 
-        <div v-if="data.workflow && !gridFields.length && !loraFields.length" class="panel-hint">
+        <!-- 边界框：固定放在所有参数与 LoRA 之后 -->
+        <div v-for="field in bboxFields" :key="field.id" class="panel-bbox">
+          <div class="panel-lora-head">
+            <span class="panel-lora-title" :title="`#${field.nodeId} ${field.key}`">
+              {{ field.label }}
+            </span>
+          </div>
+          <BboxEditor
+            :value="bboxValue(field)"
+            :width="bboxSizeOf(field).width"
+            :height="bboxSizeOf(field).height"
+            :background-url="bboxBackground(field)"
+            @update="saveBbox(field, $event)"
+          />
+        </div>
+
+        <div
+          v-if="data.workflow && !gridFields.length && !loraFields.length && !bboxFields.length"
+          class="panel-hint"
+        >
           该工作流没有其他可调参数
         </div>
 
@@ -760,6 +779,8 @@ import { Handle, Position, useVueFlow } from "@vue-flow/core";
 import NodeActions from "./NodeActions.vue";
 import NodeTitle from "./NodeTitle.vue";
 import VideoPlayer from "./VideoPlayer.vue";
+import BboxEditor from "./editors/BboxEditor.vue";
+import { resolutionSize } from "../../utils/bbox.js";
 import { useLibrary } from "../../composables/useLibrary.js";
 
 const props = defineProps({
@@ -1597,9 +1618,12 @@ function mediaNames(kind) {
 const MEDIA_TYPES = new Set(["image", "image_list", "audio", "video"]);
 // 多 LoRA 字段单独占一块，不混在普通参数网格里
 const editableFields = computed(() =>
-  fields.value.filter((field) => !MEDIA_TYPES.has(field.type) && field.type !== "lora")
+  fields.value.filter(
+    (field) => !MEDIA_TYPES.has(field.type) && field.type !== "lora" && field.type !== "bbox"
+  )
 );
 const loraFields = computed(() => fields.value.filter((field) => field.type === "lora"));
+const bboxFields = computed(() => fields.value.filter((field) => field.type === "bbox"));
 
 // ------------------------------------------------------------ 多 LoRA 加载器
 // 值是 ND Super LoRA Loader 的 lora_bundle：JSON 字符串数组
@@ -1894,6 +1918,73 @@ function buildMediaRanks(list) {
       });
   });
   return ranks;
+}
+
+// ------------------------------------------------------------ 边界框
+function bboxValue(field) {
+  const value = valueOf(field);
+  if (value && typeof value === "object" && Array.isArray(value.__value__)) return value;
+  return { __value__: [] };
+}
+
+// 尺寸跟随分辨率选择器；节点面板上改比例 / 百万像素时立即重算
+function bboxSizeOf(field) {
+  const size = field.size || {};
+  const pick = (key) =>
+    fields.value.find(
+      (item) => String(item.nodeId) === String(size.nodeId) && item.key === key
+    );
+  if (!size.nodeId) {
+    return {
+      width: Number(size.width) || 1024,
+      height: Number(size.height) || 1024,
+    };
+  }
+  const ratioField = pick("aspect_ratio");
+  const megapixelField = pick("megapixels");
+  const multipleField = pick("multiple");
+  const computed = resolutionSize(
+    ratioField ? String(valueOf(ratioField)) : size.aspectRatio,
+    Number(megapixelField ? valueOf(megapixelField) : size.megapixels ?? 1),
+    Number(multipleField ? valueOf(multipleField) : size.multiple ?? 8)
+  );
+  return (
+    computed || {
+      width: Number(size.width) || 1024,
+      height: Number(size.height) || 1024,
+    }
+  );
+}
+
+// 背景图与加载图像字段共用同一张素材：节点有多图时跟着它的索引走
+function bboxBackground(field) {
+  const pool = (props.data.fromPreprocess
+    ? inputMedia.value
+    : [...inputMedia.value, ...ownMedia.value]
+  ).filter((item) => item.kind === "image" && item.ref?.filename);
+  if (!pool.length) return "";
+  let rank = 0;
+  const background = field.background;
+  if (background) {
+    const imageField = fields.value.find(
+      (item) =>
+        item.type === "image" &&
+        String(item.nodeId) === String(background.nodeId) &&
+        item.key === background.key
+    );
+    if (imageField) {
+      const ranks = buildMediaRanks(fields.value);
+      rank = Number.isInteger(imageField.mediaIndex)
+        ? imageField.mediaIndex
+        : ranks.get(`image:${imageField.nodeId}:${imageField.key}`) ?? 0;
+    }
+  }
+  const item = pool[Math.min(rank, pool.length - 1)];
+  return displaySrc(item) || item.url || "";
+}
+
+function saveBbox(field, boxes) {
+  setValue(field, { __value__: boxes });
 }
 
 // 实际提交给工作流的值：媒体字段从节点素材解析，随机字段按模式生成。
@@ -3132,6 +3223,16 @@ async function run() {
 
 /* 多 LoRA 加载器：整块占满面板宽度，一行一个 LoRA */
 .panel-lora {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  background: var(--c-input-bg);
+}
+
+.panel-bbox {
   display: flex;
   flex-direction: column;
   gap: 6px;

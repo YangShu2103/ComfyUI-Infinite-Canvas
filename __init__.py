@@ -14,6 +14,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -654,6 +655,7 @@ _FIELD_TYPES = {
     "video",
     "random",
     "lora",
+    "bbox",
 }
 _FIELD_NUM_KEYS = ("min", "max", "step")
 
@@ -687,17 +689,24 @@ def _clean_fields(raw, workflow):
         node = workflow.get(node_id) if isinstance(workflow, dict) else None
         if not isinstance(node, dict) or not key:
             continue
+        # last_incoming 是边界框节点自己维护的内部状态，不参与字段配置
+        if key == "last_incoming":
+            continue
+        field_type = str(item.get("type") or "text")
+        if field_type not in _FIELD_TYPES:
+            field_type = "text"
         value = (node.get("inputs") or {}).get(key)
-        if isinstance(value, (list, dict)):
+        # 边界框的 editor_state 本身就是对象；其他字段仍然是字面量
+        if field_type == "bbox":
+            if not isinstance(value, dict):
+                continue
+        elif isinstance(value, (list, dict)):
             continue
         marker = (node_id, key)
         if marker in seen:
             continue
         seen.add(marker)
 
-        field_type = str(item.get("type") or "text")
-        if field_type not in _FIELD_TYPES:
-            field_type = "text"
         title = (node.get("_meta") or {}).get("title")
         entry = {
             "nodeId": node_id,
@@ -730,12 +739,93 @@ def _clean_fields(raw, workflow):
     return cleaned
 
 
+_BBOX_ASPECT_RATIOS = {
+    "1:1 (Square)": (1, 1),
+    "2:3 (Portrait Photo)": (2, 3),
+    "3:2 (Photo)": (3, 2),
+    "3:4 (Portrait Standard)": (3, 4),
+    "4:3 (Standard)": (4, 3),
+    "9:16 (Portrait Widescreen)": (9, 16),
+    "16:9 (Widescreen)": (16, 9),
+    "21:9 (Ultrawide)": (21, 9),
+}
+
+
+def _resolution_size(inputs):
+    """复刻 ResolutionSelector：由比例、百万像素和对齐倍数算出宽高"""
+    pair = _BBOX_ASPECT_RATIOS.get(str(inputs.get("aspect_ratio") or ""))
+    if not pair:
+        return None
+    try:
+        megapixels = float(inputs.get("megapixels", 1))
+        multiple = int(inputs.get("multiple", 8))
+    except (TypeError, ValueError):
+        return None
+    if megapixels <= 0 or multiple <= 0:
+        return None
+    total = megapixels * 1024 * 1024
+    scale = math.sqrt(total / (pair[0] * pair[1]))
+    return {
+        "width": int(round(pair[0] * scale / multiple)) * multiple,
+        "height": int(round(pair[1] * scale / multiple)) * multiple,
+        "aspectRatio": str(inputs.get("aspect_ratio")),
+        "megapixels": megapixels,
+        "multiple": multiple,
+    }
+
+
+def _bbox_meta(workflow, node):
+    """边界框的尺寸来源与背景图来源，供画布按同样规则渲染"""
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    if not isinstance(inputs, dict):
+        return {}
+    meta = {}
+
+    background = inputs.get("background")
+    if isinstance(background, list) and background:
+        source = workflow.get(str(background[0]))
+        if isinstance(source, dict) and str(source.get("class_type") or "") == "LoadImage":
+            image_inputs = source.get("inputs")
+            if isinstance(image_inputs, dict) and isinstance(image_inputs.get("image"), str):
+                meta["background"] = {"nodeId": str(background[0]), "key": "image"}
+
+    width = inputs.get("width")
+    height = inputs.get("height")
+    if (
+        isinstance(width, (int, float))
+        and not isinstance(width, bool)
+        and isinstance(height, (int, float))
+        and not isinstance(height, bool)
+    ):
+        meta["size"] = {"width": int(width), "height": int(height)}
+        return meta
+
+    if (
+        isinstance(width, list)
+        and isinstance(height, list)
+        and width
+        and height
+        and str(width[0]) == str(height[0])
+    ):
+        source = workflow.get(str(width[0]))
+        if isinstance(source, dict) and str(source.get("class_type") or "") == "ResolutionSelector":
+            size = _resolution_size(source.get("inputs") or {})
+            if size:
+                size["nodeId"] = str(width[0])
+                meta["size"] = size
+    return meta
+
+
 def _public_fields(name, workflow):
     """返回字段配置，并把默认值取成工作流里的当前值"""
     result = []
     for field in _clean_fields(_load_fields(name), workflow):
         value = (workflow[field["nodeId"]].get("inputs") or {}).get(field["key"])
-        field["default"] = value if isinstance(value, (str, int, float, bool, list)) else ""
+        field["default"] = (
+            value if isinstance(value, (str, int, float, bool, list, dict)) else ""
+        )
+        if field["type"] == "bbox":
+            field.update(_bbox_meta(workflow, workflow[field["nodeId"]]))
         result.append(field)
     return result
 
@@ -1010,7 +1100,7 @@ def _apply_params(workflow, params):
             continue
         for key, value in values.items():
             # 只覆盖已存在的字面量；不新增键，也不改动连线
-            if key in inputs and not isinstance(inputs[key], (list, dict)):
+            if key in inputs and not isinstance(inputs[key], list):
                 inputs[key] = value
 
 

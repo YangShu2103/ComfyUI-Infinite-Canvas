@@ -97,6 +97,9 @@
             <div v-if="entry.type === 'lora'" class="nf-note">
               运行时在节点面板里增删 LoRA、调整强度和触发词，写回该节点的 lora_bundle；这里只决定是否暴露给画布。
             </div>
+            <div v-if="entry.type === 'bbox'" class="nf-note">
+              运行时在节点面板里绘制边界框，写回该节点的 editor_state；画布尺寸自动跟随分辨率选择器，背景图跟随加载图像字段。
+            </div>
           </div>
         </div>
 
@@ -140,6 +143,7 @@ const TYPE_OPTIONS = [
   { value: "video", label: "视频" },
   { value: "random", label: "随机数" },
   { value: "lora", label: "多LoRA加载器" },
+  { value: "bbox", label: "边界框" },
 ];
 
 const MEDIA_LABELS = {
@@ -166,7 +170,12 @@ const enabledCount = computed(() => entries.value.filter((entry) => entry.enable
 // 上次向上抛出的结果，避免初始化 / 无变化时反复触发
 let lastPayload = "";
 
+function isBboxValue(value) {
+  return !!value && typeof value === "object" && Array.isArray(value.__value__);
+}
+
 function preview(value) {
+  if (isBboxValue(value)) return `${value.__value__.length} 个框`;
   if (typeof value === "string") return value ? `"${value.slice(0, 60)}"` : '""';
   if (value === true || value === false) return String(value);
   return String(value);
@@ -174,6 +183,7 @@ function preview(value) {
 
 // 按值的形状猜一个合理的默认类型
 function guessType(value, key) {
+  if (isBboxValue(value)) return "bbox";
   if (typeof value === "boolean") return "switch";
   if (typeof value === "number") return "number";
   // ND Super LoRA Loader 这类节点的 lora_bundle：JSON 字符串数组
@@ -190,8 +200,11 @@ function buildEntries() {
   const saved = new Map((props.fields || []).map((field) => [field.key, field]));
   const list = [];
   for (const [key, value] of Object.entries(inputs)) {
-    // 连线（数组）和嵌套对象都不能通过表单直接修改
-    if (Array.isArray(value) || (value !== null && typeof value === "object")) continue;
+    // last_incoming 是边界框节点自己维护的内部状态，不暴露到画布
+    if (key === "last_incoming") continue;
+    // 连线（数组）和嵌套对象都不能通过表单直接修改；边界框的 editor_state 除外
+    const bbox = isBboxValue(value);
+    if (!bbox && (Array.isArray(value) || (value !== null && typeof value === "object"))) continue;
     const field = saved.get(key);
     let options = [...(field?.options || [])];
     // 还没配选项时，用当前值作为第一个选项，省得面对空下拉框
