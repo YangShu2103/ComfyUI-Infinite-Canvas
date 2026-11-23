@@ -26,12 +26,14 @@ const PROMPT_WIDTH = 460;
 const PROMPT_HEIGHT = 280;
 
 // ComfyUI 的 /view 地址：素材存在 input 目录，产物存在 output 目录，前端只存引用
-function mediaUrl(ref) {
+// version 是缓存标识：同名文件被重新生成时 filename 不变，靠它绕开浏览器缓存的旧视频 / 旧图
+function mediaUrl(ref, version = "") {
   const params = new URLSearchParams({
     filename: ref.filename || "",
     subfolder: ref.subfolder || "",
     type: ref.type || "input",
   });
+  if (version) params.set("v", String(version));
   return `/view?${params.toString()}`;
 }
 
@@ -181,7 +183,7 @@ function stripMediaItem(item) {
 function hydrateMediaItem(item) {
   if (!item) return item;
   if (!item.ref || !item.ref.filename) return item;
-  return { ...item, url: mediaUrl(item.ref), thumbUrl: mediaThumbUrl(item.ref, 640, item.id) };
+  return { ...item, url: mediaUrl(item.ref, item.id), thumbUrl: mediaThumbUrl(item.ref, 640, item.id) };
 }
 
 // 素材指纹：除了 id 还带上文件名。
@@ -478,7 +480,7 @@ export function useGraph() {
         name,
         kind,
         ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "input" },
-        url: mediaUrl(ref),
+        url: mediaUrl(ref, itemId),
         thumbUrl: mediaThumbUrl(ref, 640, itemId),
       };
     } catch {
@@ -550,7 +552,7 @@ export function useGraph() {
       pendingFiles.delete(item.id);
       const localUrl = item.url;
       item.ref = { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "input" };
-      item.url = mediaUrl(item.ref);
+      item.url = mediaUrl(item.ref, item.id);
       item.thumbUrl = mediaThumbUrl(item.ref, 640, item.id);
       item.pending = false;
       item.error = "";
@@ -617,7 +619,7 @@ export function useGraph() {
           name: ref.name || ref.filename,
           kind: ref.kind || guessKind(ref.filename),
           ref: { filename: ref.filename, subfolder: ref.subfolder || "", type: ref.type || "output" },
-          url: mediaUrl(ref),
+          url: mediaUrl(ref, itemId),
           thumbUrl: mediaThumbUrl(ref, 640, itemId),
         };
       });

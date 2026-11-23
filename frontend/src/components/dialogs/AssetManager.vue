@@ -518,6 +518,8 @@ function downloadOne(file) {
     filename: file.filename,
     subfolder: file.subfolder || "",
     type: file.type || kind.value,
+    // 同名文件重新生成后，避免下载到浏览器缓存里的旧文件
+    v: String(file.updated || 0),
   });
   const anchor = document.createElement("a");
   anchor.href = `/view?${params.toString()}`;
@@ -631,11 +633,13 @@ function thumbUrl(file, size = 320) {
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
 }
 
+// 原图地址：预览、下载用；v=mtime 避免同名文件被覆盖后播到旧内容
 function assetUrl(file) {
   const params = new URLSearchParams({
     filename: file.filename,
     subfolder: file.subfolder || "",
     type: file.type || kind.value,
+    v: String(file.updated || 0),
   });
   return `/view?${params.toString()}`;
 }

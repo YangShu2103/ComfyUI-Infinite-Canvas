@@ -1227,6 +1227,13 @@ def _history_files(outputs):
                 if token in seen:
                     continue
                 seen.add(token)
+                # 带上 mtime 给前端做缓存版本：同名文件重新生成后能换掉旧缩略图 / 旧视频
+                try:
+                    path = _asset_path(ref["type"], ref["subfolder"], ref["filename"])
+                    if path:
+                        ref["updated"] = int(os.stat(path).st_mtime)
+                except OSError:
+                    pass
                 files.append(ref)
     return files
 

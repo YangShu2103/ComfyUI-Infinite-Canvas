@@ -925,6 +925,8 @@ function historyThumb(item) {
     subfolder: file.subfolder || "",
     type: file.type,
     size: "320",
+    // v=源文件 mtime：同名文件重新生成后换掉浏览器缓存的旧缩略图
+    v: String(file.updated || 0),
     // 缩略图接口升级（保留 alpha），刷掉浏览器 immutable 缓存
     tv: "2",
   });
@@ -1164,12 +1166,13 @@ function thumbUrl(file, size = 320) {
   return `/infinite_canvas/api/library/thumb?${params.toString()}`;
 }
 
-// 原图地址：拖到画布、预览视频时用
+// 原图地址：拖到画布、预览视频时用；v=mtime 避免同名文件被覆盖后播到旧内容
 function assetUrl(file) {
   const params = new URLSearchParams({
     filename: file.filename,
     subfolder: file.subfolder || "",
     type: file.type || kind.value,
+    v: String(file.updated || 0),
   });
   return `/view?${params.toString()}`;
 }
