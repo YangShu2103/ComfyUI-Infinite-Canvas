@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -1368,6 +1369,505 @@ def _collect_texts(outputs):
     return texts
 
 
+# ---------------------------------------------------------------- 时间线导出
+# 用 PyAV（ComfyUI 自带的 ffmpeg 库）把 2 条视频轨 + 2 条音频轨合成一个 MP4。
+# 画面与前端预览保持一致：每个时间点只画最上层命中的视频 / 图片片段（等比缩放 + 黑边），
+# 音轨把各片段混在一起。导出放在后台线程里跑，前端轮询进度。
+
+_TIMELINE_JOBS = {}
+_TIMELINE_JOBS_LOCK = threading.Lock()
+_TIMELINE_JOB_KEEP = 20
+# 导出上限 10 分钟：音频混音要整段放内存，再长容易把进程内存撑爆
+_TIMELINE_MAX_SECONDS = 600
+_TIMELINE_AUDIO_RATE = 48000
+_TIMELINE_AUDIO_LAYOUT = "stereo"
+
+
+class _TimelineExportCancelled(Exception):
+    """用户在导出过程中点了取消"""
+
+
+def _resolve_media_ref(ref):
+    """按 {filename, subfolder, type} 定位素材文件，限制在 input/output/temp 目录内"""
+    if not isinstance(ref, dict):
+        return None
+    filename = str(ref.get("filename") or "")
+    subfolder = str(ref.get("subfolder") or "")
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
+        return None
+    if ".." in subfolder or subfolder.startswith(("/", "\\")):
+        return None
+    root = _dir_for_type(str(ref.get("type") or "input"))
+    real_root = os.path.realpath(root)
+    path = os.path.realpath(os.path.join(root, subfolder, filename))
+    if not path.startswith(real_root + os.sep):
+        return None
+    return path if os.path.isfile(path) else None
+
+
+def _timeline_even(value, low, high):
+    try:
+        num = int(round(float(value)))
+    except (TypeError, ValueError):
+        num = low
+    num = min(high, max(low, num))
+    return num - (num % 2)
+
+
+def _clean_timeline_spec(payload):
+    """校验前端传来的时间线数据，把素材引用解析成磁盘路径；返回 (spec, error)"""
+    if not isinstance(payload, dict):
+        return None, "请求体格式不正确"
+
+    width = _timeline_even(payload.get("width", 1280), 16, 3840)
+    height = _timeline_even(payload.get("height", 720), 16, 3840)
+    try:
+        fps = float(payload.get("fps") or 30)
+    except (TypeError, ValueError):
+        fps = 30.0
+    fps = min(60.0, max(1.0, fps))
+
+    tracks_in = payload.get("tracks")
+    if not isinstance(tracks_in, list) or not tracks_in:
+        return None, "时间线没有轨道"
+
+    tracks = []
+    duration = 0.0
+    for track_in in tracks_in:
+        if not isinstance(track_in, dict):
+            continue
+        kind = "audio" if track_in.get("kind") == "audio" else "video"
+        clips = []
+        for clip_in in track_in.get("clips") or []:
+            if not isinstance(clip_in, dict):
+                continue
+            try:
+                start = max(0.0, float(clip_in.get("start") or 0))
+                source_in = max(0.0, float(clip_in.get("in") or 0))
+                source_out = float(clip_in.get("out") or 0)
+            except (TypeError, ValueError):
+                continue
+            if source_out <= source_in:
+                continue
+            path = _resolve_media_ref(clip_in.get("ref"))
+            if not path:
+                name = str(clip_in.get("name") or "未知素材")
+                return None, f"素材文件不存在：{name}"
+            clip_kind = str(clip_in.get("kind") or "")
+            if kind == "audio":
+                clip_kind = "audio"
+            elif clip_kind not in ("video", "image"):
+                clip_kind = "video"
+            clips.append(
+                {
+                    "id": str(clip_in.get("id") or f"{path}@{source_in}"),
+                    "kind": clip_kind,
+                    "path": path,
+                    "start": start,
+                    "in": source_in,
+                    "out": source_out,
+                }
+            )
+            duration = max(duration, start + (source_out - source_in))
+        tracks.append({"kind": kind, "clips": clips})
+
+    if duration <= 0:
+        return None, "时间线是空的"
+    if duration > _TIMELINE_MAX_SECONDS:
+        return None, f"时间线太长（上限 {_TIMELINE_MAX_SECONDS // 60} 分钟）"
+
+    return {
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "duration": duration,
+        "tracks": tracks,
+    }, None
+
+
+def _timeline_frame_seconds(frame):
+    if frame.time is not None:
+        return float(frame.time)
+    if frame.pts is not None and frame.time_base is not None:
+        return float(frame.pts * frame.time_base)
+    return None
+
+
+class _TimelineFrameReader:
+    """按时间顺序取帧：目标时间之前最近的一帧
+
+    同一时刻只画最上层的一个片段，所以整个导出过程只保留一个解码器；
+    换片段时按新的入点重新打开，避免长视频从 0 秒白解码一遍。
+    """
+
+    def __init__(self, av, path, start=0.0):
+        self.av = av
+        self.path = path
+        self._open(start)
+
+    def _open(self, start):
+        self.container = self.av.open(self.path)
+        streams = [s for s in self.container.streams if s.type == "video"]
+        if not streams:
+            raise RuntimeError("文件里没有视频轨")
+        self.stream = streams[0]
+        try:
+            self.stream.thread_type = "AUTO"
+        except Exception:
+            pass
+        if start > 0.5:
+            try:
+                self.container.seek(int((start - 0.5) * self.av.time_base))
+            except Exception:
+                pass
+        self._iter = self.container.decode(self.stream)
+        self._peek = None
+        self._peek_time = 0.0
+        self._last = None
+        self._last_time = -1e18
+
+    def frame_at(self, t):
+        # 暂存的那一帧还没到目标时间：直接返回当前帧。
+        # 不能继续往后解码——24fps 素材放在 30fps 时间线上时，目标时间会频繁
+        # 落在两帧之间，继续解码会把暂存的帧丢掉，越落越远，最后画面定格。
+        if self._peek is not None:
+            if self._peek_time > t + 1e-6:
+                return self._last
+            self._last, self._last_time = self._peek, self._peek_time
+            self._peek = None
+        while self._last_time < t:
+            try:
+                frame = next(self._iter)
+            except StopIteration:
+                break
+            seconds = _timeline_frame_seconds(frame)
+            if seconds is None:
+                seconds = self._last_time + 1 / 30
+            if seconds <= t + 1e-6:
+                self._last, self._last_time = frame, seconds
+            else:
+                self._peek, self._peek_time = frame, seconds
+                break
+        return self._last
+
+    def close(self):
+        try:
+            self.container.close()
+        except Exception:
+            pass
+
+
+def _fit_contain_image(image, width, height):
+    """等比缩放到画布内，居中，空出来的地方填黑（与预览一致）"""
+    from PIL import Image
+
+    image = image.convert("RGB")
+    scale = min(width / max(1, image.width), height / max(1, image.height))
+    w = max(1, round(image.width * scale))
+    h = max(1, round(image.height * scale))
+    if (w, h) != image.size:
+        image = image.resize((w, h), Image.BILINEAR)
+    canvas = Image.new("RGB", (width, height), (0, 0, 0))
+    canvas.paste(image, ((width - w) // 2, (height - h) // 2))
+    return canvas
+
+
+def _decode_timeline_audio(av, numpy, path, limit):
+    """把音轨整段解码成 48k 立体声 float32（2, n），最多解码到 limit 秒"""
+    try:
+        container = av.open(path)
+    except Exception:
+        return None
+    try:
+        streams = [s for s in container.streams if s.type == "audio"]
+        if not streams:
+            return None
+        stream = streams[0]
+        resampler = av.AudioResampler(
+            format="fltp", layout=_TIMELINE_AUDIO_LAYOUT, rate=_TIMELINE_AUDIO_RATE
+        )
+        chunks = []
+        total = 0
+        stop_at = int(limit * _TIMELINE_AUDIO_RATE) + _TIMELINE_AUDIO_RATE
+        for frame in container.decode(stream):
+            for out_frame in resampler.resample(frame):
+                arr = out_frame.to_ndarray()
+                if arr.ndim == 1:
+                    arr = numpy.stack([arr, arr])
+                chunks.append(arr.astype(numpy.float32, copy=False))
+                total += arr.shape[1]
+            if total >= stop_at:
+                break
+        for out_frame in resampler.resample(None) or []:
+            chunks.append(out_frame.to_ndarray().astype(numpy.float32, copy=False))
+        if not chunks:
+            return None
+        return numpy.concatenate(chunks, axis=1)
+    except Exception:
+        return None
+    finally:
+        try:
+            container.close()
+        except Exception:
+            pass
+
+
+def _export_timeline_media(spec, out_path, progress=None, cancelled=None):
+    """把时间线渲染成 MP4，progress(fraction, stage) 用于上报进度"""
+    import av
+    import numpy
+    from PIL import Image
+
+    width = spec["width"]
+    height = spec["height"]
+    fps = float(spec["fps"])
+    tracks = spec["tracks"]
+    video_tracks = [t for t in tracks if t["kind"] == "video"]
+    audio_tracks = [t for t in tracks if t["kind"] == "audio"]
+    duration = float(spec["duration"])
+    total_frames = max(1, int(math.ceil(duration * fps - 1e-6)))
+
+    def report(value, stage):
+        if progress:
+            progress(max(0.0, min(1.0, value)), stage)
+
+    def check_cancel():
+        if cancelled and cancelled():
+            raise _TimelineExportCancelled()
+
+    def clip_len(clip):
+        return max(0.0, clip["out"] - clip["in"])
+
+    report(0.02, "准备素材")
+
+    # ---- 音轨混音：所有音频轨叠加，越界削顶
+    mix = None
+    try:
+        total_samples = int(round(duration * _TIMELINE_AUDIO_RATE))
+        if total_samples > 0:
+            mix = numpy.zeros((2, total_samples), dtype=numpy.float32)
+            audio_cache = {}
+            for track in audio_tracks:
+                for clip in track["clips"]:
+                    path = clip["path"]
+                    need = clip["out"]
+                    cached = audio_cache.get(path)
+                    if cached is None or cached[0] < need:
+                        data = _decode_timeline_audio(av, numpy, path, need)
+                        audio_cache[path] = (need, data)
+                    data = audio_cache[path][1]
+                    if data is None or not data.shape[1]:
+                        continue
+                    begin = max(0, int(round(clip["in"] * _TIMELINE_AUDIO_RATE)))
+                    end = min(data.shape[1], int(round(clip["out"] * _TIMELINE_AUDIO_RATE)))
+                    if end <= begin:
+                        continue
+                    dest = int(round(clip["start"] * _TIMELINE_AUDIO_RATE))
+                    take = min(end - begin, mix.shape[1] - dest)
+                    if take > 0:
+                        mix[:, dest : dest + take] += data[:, begin : begin + take]
+            numpy.clip(mix, -1.0, 1.0, out=mix)
+    except _TimelineExportCancelled:
+        raise
+    except Exception:
+        mix = None
+
+    report(0.08, "合成画面")
+
+    # ---- 选编码器：优先 libx264，macOS 上退到 VideoToolbox，再不行用 mpeg4
+    codec = None
+    for name in ("libx264", "h264_videotoolbox", "mpeg4"):
+        try:
+            av.codec.Codec(name, "w")
+            codec = name
+            break
+        except Exception:
+            continue
+    if not codec:
+        raise RuntimeError("当前 PyAV 没有可用的视频编码器")
+
+    from fractions import Fraction
+
+    reader = None
+    output = av.open(out_path, "w", format="mp4")
+    try:
+        rate = Fraction(fps).limit_denominator(1001)
+        vstream = output.add_stream(codec, rate=rate)
+        vstream.width = width
+        vstream.height = height
+        vstream.pix_fmt = "yuv420p"
+        if codec == "libx264":
+            vstream.options = {"crf": "20", "preset": "veryfast"}
+        else:
+            vstream.bit_rate = max(2_000_000, width * height * 3)
+
+        astream = None
+        if mix is not None:
+            try:
+                astream = output.add_stream("aac", rate=_TIMELINE_AUDIO_RATE)
+                astream.layout = _TIMELINE_AUDIO_LAYOUT
+            except Exception:
+                astream = None
+
+        image_cache = {}
+        reader_key = None
+
+        def clip_at(t):
+            for track in video_tracks:
+                for clip in track["clips"]:
+                    if clip["start"] <= t < clip["start"] + clip_len(clip):
+                        return clip
+            return None
+
+        def frame_image(clip, t):
+            nonlocal reader, reader_key
+            path = clip["path"]
+            if clip["kind"] == "image":
+                scaled = image_cache.get(path)
+                if scaled is None:
+                    with Image.open(path) as raw:
+                        scaled = _fit_contain_image(raw, width, height)
+                    image_cache[path] = scaled
+                return scaled
+            key = clip["id"]
+            if reader is None or reader_key != key:
+                if reader is not None:
+                    reader.close()
+                    reader = None
+                    reader_key = None
+                reader = _TimelineFrameReader(av, path, clip["in"])
+                reader_key = key
+            source_time = clip["in"] + (t - clip["start"])
+            frame = reader.frame_at(max(0.0, source_time))
+            if frame is None:
+                return None
+            return _fit_contain_image(frame.to_image(), width, height)
+
+        for index in range(total_frames):
+            check_cancel()
+            t = index / fps
+            clip = clip_at(t)
+            image = frame_image(clip, t) if clip is not None else None
+            if image is None:
+                image = Image.new("RGB", (width, height), (0, 0, 0))
+            frame = av.VideoFrame.from_image(image)
+            frame.pts = index
+            for packet in vstream.encode(frame):
+                output.mux(packet)
+            if index % 5 == 0:
+                report(0.08 + 0.86 * (index + 1) / total_frames, "合成画面")
+
+        for packet in vstream.encode(None):
+            output.mux(packet)
+
+        if astream is not None:
+            report(0.96, "混合音频")
+            chunk = int(getattr(astream.codec_context, "frame_size", 0) or 1024)
+            total = mix.shape[1]
+            cursor = 0
+            while cursor < total:
+                check_cancel()
+                block = mix[:, cursor : min(total, cursor + chunk)]
+                if block.shape[1] < chunk:
+                    block = numpy.pad(block, ((0, 0), (0, chunk - block.shape[1])))
+                aframe = av.AudioFrame.from_ndarray(
+                    numpy.ascontiguousarray(block),
+                    format="fltp",
+                    layout=_TIMELINE_AUDIO_LAYOUT,
+                )
+                aframe.sample_rate = _TIMELINE_AUDIO_RATE
+                aframe.pts = cursor
+                for packet in astream.encode(aframe):
+                    output.mux(packet)
+                cursor += chunk
+            for packet in astream.encode(None):
+                output.mux(packet)
+
+        report(1.0, "完成")
+        return {
+            "duration": duration,
+            "frames": total_frames,
+            "width": width,
+            "height": height,
+            "has_audio": astream is not None,
+        }
+    finally:
+        if reader is not None:
+            reader.close()
+        try:
+            output.close()
+        except Exception:
+            pass
+
+
+def _timeline_job_update(job_id, **fields):
+    with _TIMELINE_JOBS_LOCK:
+        job = _TIMELINE_JOBS.get(job_id)
+        if job is not None:
+            job.update(fields)
+
+
+def _prune_timeline_jobs():
+    """只保留最近若干个已结束的任务，避免进程里越堆越多"""
+    with _TIMELINE_JOBS_LOCK:
+        finished = [
+            (job_id, job)
+            for job_id, job in _TIMELINE_JOBS.items()
+            if job.get("status") != "running"
+        ]
+        if len(finished) <= _TIMELINE_JOB_KEEP:
+            return
+        finished.sort(key=lambda entry: entry[1].get("created", 0))
+        for job_id, _ in finished[: len(finished) - _TIMELINE_JOB_KEEP]:
+            _TIMELINE_JOBS.pop(job_id, None)
+
+
+def _run_timeline_export_job(job_id, spec):
+    """后台线程：渲染文件，完成后把产物信息写回任务状态"""
+    out_dir = _output_dir()
+    name = f"infinite_canvas_timeline_{time.strftime('%Y%m%d_%H%M%S')}_{job_id[:4]}.mp4"
+    final_path = os.path.join(out_dir, name)
+    tmp_path = os.path.join(out_dir, f".{name}.part")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        info = _export_timeline_media(
+            spec,
+            tmp_path,
+            progress=lambda value, stage: _timeline_job_update(
+                job_id, progress=round(value, 3), stage=stage
+            ),
+            cancelled=lambda: bool(_TIMELINE_JOBS.get(job_id, {}).get("cancel")),
+        )
+        os.replace(tmp_path, final_path)
+        _timeline_job_update(
+            job_id,
+            status="done",
+            progress=1.0,
+            stage="完成",
+            result={
+                "filename": name,
+                "subfolder": "",
+                "type": "output",
+                "name": name,
+                "duration": round(info["duration"], 2),
+                "width": info["width"],
+                "height": info["height"],
+                "has_audio": info["has_audio"],
+            },
+        )
+    except _TimelineExportCancelled:
+        _timeline_job_update(job_id, status="cancelled", stage="已取消", progress=0.0)
+    except Exception as exc:
+        _timeline_job_update(job_id, status="error", error=str(exc)[:300], stage="失败")
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        _prune_timeline_jobs()
+
+
 # ---------------------------------------------------------------- 路由注册
 
 def register_routes(app):
@@ -2112,6 +2612,62 @@ def register_routes(app):
             return web.json_response({"error": f"连接 ComfyUI 失败: {exc}"}, status=502)
         return web.json_response({"ok": True})
 
+    async def timeline_export_start(request):
+        """启动时间线导出任务，立即返回 jobId；前端轮询进度"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+
+        spec, error = _clean_timeline_spec(payload)
+        if error:
+            return web.json_response({"error": error}, status=400)
+
+        job_id = uuid.uuid4().hex[:12]
+        with _TIMELINE_JOBS_LOCK:
+            _TIMELINE_JOBS[job_id] = {
+                "id": job_id,
+                "status": "running",
+                "progress": 0.0,
+                "stage": "排队中",
+                "error": "",
+                "result": None,
+                "cancel": False,
+                "created": time.time(),
+            }
+        threading.Thread(
+            target=_run_timeline_export_job,
+            args=(job_id, spec),
+            name=f"timeline-export-{job_id}",
+            daemon=True,
+        ).start()
+        return web.json_response({"jobId": job_id, "duration": round(spec["duration"], 2)})
+
+    async def timeline_export_status(request):
+        job_id = request.match_info.get("job_id", "")
+        with _TIMELINE_JOBS_LOCK:
+            job = dict(_TIMELINE_JOBS.get(job_id) or {})
+        if not job:
+            return web.json_response({"error": "导出任务不存在"}, status=404)
+        return web.json_response(
+            {
+                "status": job.get("status"),
+                "progress": job.get("progress", 0.0),
+                "stage": job.get("stage", ""),
+                "error": job.get("error", ""),
+                "result": job.get("result"),
+            }
+        )
+
+    async def timeline_export_cancel(request):
+        job_id = request.match_info.get("job_id", "")
+        with _TIMELINE_JOBS_LOCK:
+            job = _TIMELINE_JOBS.get(job_id)
+            if job is None:
+                return web.json_response({"error": "导出任务不存在"}, status=404)
+            job["cancel"] = True
+        return web.json_response({"ok": True})
+
     if os.path.isdir(_FRONTEND_DIST):
         app.add_routes([web.static("/infinite_canvas/app", _FRONTEND_DIST)])
 
@@ -2152,6 +2708,11 @@ def register_routes(app):
             web.post(f"{API_PREFIX}/queue/abort", abort_prompt),
             web.get(f"{API_PREFIX}/queue/history", queue_history),
             web.post(f"{API_PREFIX}/free", free_memory),
+            web.post(f"{API_PREFIX}/timeline/export", timeline_export_start),
+            web.get(f"{API_PREFIX}/timeline/export/{{job_id}}", timeline_export_status),
+            web.post(
+                f"{API_PREFIX}/timeline/export/{{job_id}}/cancel", timeline_export_cancel
+            ),
         ]
     )
 

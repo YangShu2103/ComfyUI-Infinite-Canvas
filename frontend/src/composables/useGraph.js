@@ -1,5 +1,6 @@
 import { computed, nextTick, onScopeDispose, reactive, ref, toRaw, watch } from "vue";
 import { useVueFlow } from "@vue-flow/core";
+import { createTimeline } from "../utils/timeline";
 
 // 默认节点按 16:9 出图：宽度 454、高度 226，使素材卡片区域（内容区 × 84%）正好 16:9，
 // 这样跑出 16:9 的图时节点尺寸不会再跳动
@@ -393,6 +394,33 @@ export function useGraph() {
     return true;
   }
 
+  // 右键菜单「时间线节点」：在鼠标位置创建多轨时间线节点
+  function spawnTimelineNode(position) {
+    captureUndo(true);
+    nodeSeq += 1;
+    const id = String(nodeSeq);
+    for (const node of flow.getNodes.value) {
+      if (node.selected) node.selected = false;
+    }
+    flow.addNodes([
+      {
+        id,
+        type: "timeline",
+        selected: true,
+        position: {
+          x: Math.round(position.x - TIMELINE_WIDTH / 2),
+          y: Math.round(position.y - 40),
+        },
+        data: { ...timelineData(), title: nextTitle("时间线") },
+      },
+    ]);
+    nextTick(() => {
+      const created = flow.getNodes.value.find((node) => node.id === id);
+      if (created) flow.addSelectedNodes([created]);
+    });
+    return id;
+  }
+
   // 右键菜单「预处理」：在鼠标位置创建预处理节点
   function spawnPreprocessNode(position) {
     captureUndo(true);
@@ -418,6 +446,20 @@ export function useGraph() {
       if (created) flow.addSelectedNodes([created]);
     });
     return id;
+  }
+
+  // 时间线节点：素材池 + 多轨编辑，导出的成片派生到下游
+  const TIMELINE_WIDTH = 1280;
+  const TIMELINE_HEIGHT = 400;
+
+  function timelineData() {
+    return {
+      label: "时间线",
+      inputMedia: [],
+      w: TIMELINE_WIDTH,
+      h: TIMELINE_HEIGHT,
+      timeline: createTimeline(),
+    };
   }
 
   // 单个文件 -> 上传到 ComfyUI input 目录。用 XHR 是为了能感知上传是否还有进展；
@@ -822,12 +864,16 @@ export function useGraph() {
 
   // 以当前节点为输入派生一个下游节点（右侧一列，自动向下排开）：自动连线 + 继承自身媒体
   // items 为新节点自身的首批素材（运行产物）
-  function spawnChildNode(sourceId, items = []) {
+  // options.inherit = false 时不把上游媒体塞进 inputMedia（时间线导出产物走这里）
+  function spawnChildNode(sourceId, items = [], options = {}) {
     const source = nodes.value.find((item) => item.id === sourceId);
     if (!source) return null;
 
     // 继承的素材在创建时就带上，避免新建后再改 data 被 v-model 同步覆盖
-    const inherited = (source.data.media || []).map((item) => ({ ...item, sourceId }));
+    const inherited =
+      options.inherit === false
+        ? []
+        : (source.data.media || []).map((item) => ({ ...item, sourceId }));
     const slot = placeChildOf(source);
 
     nodeSeq += 1;
@@ -1035,8 +1081,10 @@ export function useGraph() {
           },
           data: {
             // data 上除素材外的字段（params / randomFields / workflow 等）都是整体替换写入，
-            // 从不就地修改，所以浅拷贝共享引用就够了：省掉每次新建节点时深克隆整张图
+            // 从不就地修改，所以浅拷贝共享引用就够了：省掉每次新建节点时深克隆整张图。
+            // 时间线例外：片段是就地修改的，快照必须深拷贝，否则撤销回不到旧状态
             ...rest,
+            ...(rest.timeline ? { timeline: JSON.parse(JSON.stringify(rest.timeline)) } : {}),
             media: cloneMediaList(media),
             inputMedia: cloneMediaList(inputMedia),
           },
@@ -3227,6 +3275,7 @@ export function useGraph() {
     appendFilesToShot,
     spawnChildNode,
     spawnPreprocessNode,
+    spawnTimelineNode,
     spawnPromptNode,
     spawnPromptNodeAt,
     setNodePrompt,

@@ -89,6 +89,7 @@ import { VueFlow, getBezierPath } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import DemoNode from "./components/Node/index.vue";
 import PreprocessNode from "./components/Node/PreprocessNode.vue";
+import TimelineNode from "./components/Node/TimelineNode.vue";
 import PromptNode from "./components/Node/PromptNode.vue";
 import CanvasEdge from "./components/Edge/index.vue";
 import CanvasContextMenu from "./components/CanvasContextMenu.vue";
@@ -133,6 +134,7 @@ const nodeTypes = {
   demo: markRaw(DemoNode),
   preprocess: markRaw(PreprocessNode),
   text: markRaw(PromptNode),
+  timeline: markRaw(TimelineNode),
 };
 const edgeTypes = { canvas: markRaw(CanvasEdge) };
 
@@ -159,6 +161,7 @@ const {
   appendFilesToShot,
   spawnChildNode,
   spawnPreprocessNode,
+  spawnTimelineNode,
   spawnPromptNode,
   runPreprocess,
   cancelPreprocess,
@@ -469,7 +472,7 @@ const contextMenu = ref({ open: false, x: 0, y: 0, nodeId: "", point: { x: 0, y:
 // 节点改名请求：由节点组件监听后打开左上角输入框
 const renameRequest = ref("");
 const CONTEXT_MENU_WIDTH = 176;
-const CONTEXT_MENU_HEIGHT = 120;
+const CONTEXT_MENU_HEIGHT = 160;
 const CONTEXT_MENU_NODE_HEIGHT = 190;
 
 // 菜单标题：区分「新建节点」和「操作某个节点」
@@ -489,6 +492,11 @@ const contextMenuItems = computed(() => {
         key: "preprocess",
         label: "预处理节点",
         icon: ["M12 3l9 5-9 5-9-5 9-5Z", "M3 14l9 5 9-5"],
+      },
+      {
+        key: "timeline",
+        label: "时间线节点",
+        icon: ["M4 5h16v14H4z", "M8 5v14M16 5v14", "M4 12h16"],
       },
     ];
   }
@@ -565,6 +573,10 @@ function onContextPick(key) {
     spawnPreprocessNode(point);
     return;
   }
+  if (key === "timeline") {
+    spawnTimelineNode(point);
+    return;
+  }
   if (key === "prompt") {
     spawnPromptNode(point);
   }
@@ -628,6 +640,7 @@ provide("canvasGraph", {
   appendItems,
   appendFilesToShot,
   spawnChildNode,
+  spawnTimelineNode,
   duplicateNode,
   itemsFromRefs,
   uploadAsset,

@@ -36,6 +36,18 @@
 
 - 支持图片 / 视频 / 音频结果，多条素材以扇形卡片堆叠展示
 
+**时间线**
+
+- 画布空白处右键「时间线节点」新建：V2 / V1 两条视频轨、A1 / A2 两条音频轨，素材拖进去即可剪辑
+
+- 视频拖到视频轨会自动把声音放到配对音频轨并保持联动（V2→A2、V1→A1），解锁后可分开移动
+
+- 片段支持拖动、双向裁剪、分割、删除与跨轨移动；落点覆盖旧内容，压住一头裁一头、压中间裂两段
+
+- 项目帧率自动跟随第一段视频，时间精确到帧；播放头拖动会吸附片段首尾，单击片段定位到开头、再点一次定位到末尾
+
+- 导出走 ComfyUI 自带的 PyAV（ffmpeg），输出 H.264 + AAC 的 MP4，产物直接生成下游节点，可继续接力工作流
+
 **资产库**
 
 - 读取ComfyUI `input` / `output` 目录，可切分 图片 / 视频 / 音频
@@ -193,6 +205,9 @@ ComfyUI-Infinite-Canvas/
 | POST            | `/infinite_canvas/api/execute`                 | 提交工作流执行        |
 | GET             | `/infinite_canvas/api/prompts/{id}`            | 查询执行结果         |
 | POST            | `/infinite_canvas/api/free`                    | 卸载模型并释放显存 / 内存（转发 ComfyUI 的 `/free`） |
+| POST            | `/infinite_canvas/api/timeline/export`         | 时间线导出 MP4（后台渲染，返回任务 id） |
+| GET             | `/infinite_canvas/api/timeline/export/{id}`    | 查询导出进度 / 结果 |
+| POST            | `/infinite_canvas/api/timeline/export/{id}/cancel` | 取消导出 |
 
 ## 常见问题
 
