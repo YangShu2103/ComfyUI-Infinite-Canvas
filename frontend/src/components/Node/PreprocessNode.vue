@@ -1,7 +1,7 @@
 <template>
   <div
     class="pp-node"
-    :class="{ 'is-connecting': connecting }"
+    :class="{ 'is-connecting': connecting, 'is-drop-target': dropTarget }"
     :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mouseenter="hovered = true"
     @mouseleave="onLeave"
@@ -9,6 +9,8 @@
     @dragleave="onNodeDragLeave"
     @drop="onNodeDrop"
   >
+    <!-- 拖着节点落到本节点上时提示：松手把对方的素材加进素材暂存区 -->
+    <span v-if="dropTarget" class="pp-drop-tip">释放添加素材</span>
     <!-- 节点名称：左上角，单击改名 -->
     <NodeTitle
       class="pp-name"
@@ -100,7 +102,9 @@
             @mousedown.stop
             @click.stop="removePoolItem(entry.index)"
           >
-            ×
+            <svg viewBox="0 0 12 12" width="8" height="8" aria-hidden="true">
+              <path d="M3 3l6 6M9 3l-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
           </button>
         </div>
         <div v-if="!poolEntries.length" class="pp-pool-empty">
@@ -251,7 +255,9 @@
               @mousedown.stop
               @click.stop="removeShotMedia(shot, m)"
             >
-              ×
+              <svg viewBox="0 0 12 12" width="8" height="8" aria-hidden="true">
+                <path d="M3 3l6 6M9 3l-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
             </button>
           </div>
           <div v-if="!shot.media.length" class="pp-media-empty">
@@ -520,6 +526,9 @@ const targetConnected = computed(() => !!graph?.connectedTargets?.value?.has(pro
 
 // ---------------------------------------------------------------- 悬停 / 删除节点
 const hovered = ref(false);
+
+// 正拖着别的节点停在本节点上：高亮 + 提示可以松手添加素材
+const dropTarget = computed(() => graph?.mediaDropTarget?.value === props.id);
 
 function onLeave() {
   hovered.value = false;
@@ -1221,8 +1230,11 @@ const preview = ref(null);
 let previewTimer = 0;
 
 function thumbOf(item) {
-  if (item?.thumbUrl) return item.thumbUrl;
-  if (item?.kind === "image") return item.url;
+  if (!item) return "";
+  // 音频没有画面，缩略图地址取回来是坏的，直接走文字占位（和时间轴节点一致）
+  if (item.kind === "audio") return "";
+  if (item.thumbUrl) return item.thumbUrl;
+  if (item.kind === "image") return item.url;
   return "";
 }
 
@@ -1380,6 +1392,31 @@ html[data-theme="light"] .pp-node {
   --pp-wait: #2563eb;
 }
 
+/* 拖动别的节点停在本节点上方：描边高亮 + 居中提示 */
+.pp-node.is-drop-target {
+  border-color: var(--c-accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--c-accent) 35%, transparent),
+    0 6px 18px var(--c-shadow);
+}
+
+.pp-drop-tip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  transform: translate(-50%, -50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--c-accent);
+  color: #12140f;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 16px var(--c-shadow);
+}
+
 .vue-flow__node.selected .pp-node {
   border-color: var(--c-accent);
 }
@@ -1515,23 +1552,35 @@ html[data-theme="light"] .pp-node {
 
 .pp-card-del {
   position: absolute;
-  right: 2px;
-  top: 2px;
-  display: none;
+  right: 3px;
+  top: 3px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 16px;
   height: 16px;
   padding: 0;
+  box-sizing: border-box;
   border: 0;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  font-size: 12px;
-  line-height: 16px;
+  background: rgba(15, 15, 20, 0.78);
+  color: var(--c-text);
+  line-height: 0;
   cursor: pointer;
+  opacity: 0.85;
+  transition: background 0.12s ease, opacity 0.12s ease, color 0.12s ease;
 }
 
+/* 鼠标移入素材卡片时按钮底色变实，和时间轴 / 普通节点一致 */
 .pp-card:hover .pp-card-del {
-  display: block;
+  opacity: 1;
+}
+
+.pp-card-del:hover {
+  background: rgba(255, 107, 107, 0.85);
+  color: #fff;
+  opacity: 1;
 }
 
 /* 分镜列表：不显示滚动条，高度随内容自然排布 */

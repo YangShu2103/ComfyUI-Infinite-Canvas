@@ -19,7 +19,9 @@
             output
           </button>
         </div>
-        <span class="am-total">{{ assets.length }} / {{ total }} 个素材</span>
+        <span class="am-total">
+          {{ assets.length }} / {{ total }} 个素材{{ batch ? " · 单击多选、Shift 连选、Ctrl/⌘ + Shift 补充连选" : "" }}
+        </span>
 
         <div class="am-actions">
           <button
@@ -112,7 +114,7 @@
               'is-selected': selected.has(assetKey(file)),
             }"
             :title="file.filename"
-            @click="selectFile(file)"
+            @click="selectFile(file, $event)"
             @dblclick="downloadOne(file)"
           >
             <img
@@ -274,6 +276,8 @@ const promptText = computed(() => metaData.value?.prompt_text || "");
 
 // 选中集合用 Set，改动后整体替换才能触发响应式更新
 const selected = ref(new Set());
+// 勾选锚点：Shift 连选的起点
+let anchorIndex = -1;
 const loadedKeys = computed(() => assets.value.map(assetKey));
 
 const message = ref("");
@@ -295,6 +299,7 @@ watch(
       query.value = "";
       batch.value = false;
       selected.value = new Set();
+      anchorIndex = -1;
       activeFile.value = null;
       metaData.value = null;
       reload();
@@ -416,21 +421,27 @@ function setKind(next) {
   activeFile.value = null;
   metaData.value = null;
   selected.value = new Set();
+  anchorIndex = -1;
 }
 
 function setCategory(next) {
   if (category.value === next) return;
   category.value = next;
   selected.value = new Set();
+  anchorIndex = -1;
 }
 
 function toggleBatch() {
   batch.value = !batch.value;
-  if (!batch.value) selected.value = new Set();
+  if (!batch.value) {
+    selected.value = new Set();
+    anchorIndex = -1;
+  }
 }
 
 function selectAll() {
   selected.value = new Set(loadedKeys.value);
+  anchorIndex = 0;
 }
 
 function toggleSelect(file) {
@@ -439,6 +450,7 @@ function toggleSelect(file) {
   if (next.has(fileKey)) next.delete(fileKey);
   else next.add(fileKey);
   selected.value = next;
+  anchorIndex = assets.value.indexOf(file);
 }
 
 function refsOf(files) {
@@ -467,6 +479,7 @@ async function removeFiles(files) {
       metaData.value = null;
     }
     selected.value = new Set();
+    anchorIndex = -1;
     await reload();
   } catch {
     toast("删除失败，请重试");
@@ -533,9 +546,23 @@ function downloadSelected() {
   downloadFiles(assets.value.filter((file) => selected.value.has(assetKey(file))));
 }
 
-async function selectFile(file) {
+async function selectFile(file, event) {
   // 批量管理时，点整块预览就等于勾选，不必精确点左上角的小框
-  if (batch.value) toggleSelect(file);
+  const index = assets.value.indexOf(file);
+  if (batch.value) {
+    if (event?.shiftKey && anchorIndex >= 0 && index >= 0) {
+      // Shift：从锚点到当前格子的连续区间（同时按住 Ctrl/⌘ 则并入已选）
+      const from = Math.min(anchorIndex, index);
+      const to = Math.max(anchorIndex, index);
+      const keys = assets.value.slice(from, to + 1).map((item) => assetKey(item));
+      selected.value = new Set(
+        event.ctrlKey || event.metaKey ? [...selected.value, ...keys] : keys
+      );
+    } else {
+      toggleSelect(file);
+      anchorIndex = index;
+    }
+  }
   activeFile.value = file;
   metaData.value = null;
   metaLoading.value = true;
@@ -1050,18 +1077,26 @@ onBeforeUnmount(() => {
 .am-preview-body {
   position: relative;
   flex: 1 1 auto;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 0;
   overflow: hidden;
   border-radius: 10px;
   background: var(--c-surface-2);
 }
 
+/* 预览区高度由上下布局挤压决定，竖屏素材按比例放大后会顶破容器，
+   这里用绝对定位把素材限制在预览区内部居中，避免 9:16 视频溢出 */
 .am-preview-body img,
 .am-preview-body video {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
   max-width: 100%;
   max-height: 100%;
+  margin: auto;
   object-fit: contain;
 }
 

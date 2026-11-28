@@ -1,11 +1,13 @@
 <template>
   <div
     class="tl-node"
-    :class="{ 'is-connecting': connecting }"
+    :class="{ 'is-connecting': connecting, 'is-drop-target': dropActive }"
     :style="{ width: `${nodeW}px`, height: `${nodeH}px` }"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
+    <!-- 拖着节点落到本节点上时提示：松手把对方的素材加进素材暂存区 -->
+    <span v-if="dropActive" class="tl-drop-tip">释放添加素材</span>
     <NodeTitle class="tl-name" :title="data.title || '时间线'" @rename="renameNode" />
 
     <Handle
@@ -93,6 +95,16 @@ const flow = useVueFlow("demo");
 // 旧画布里的时间线节点可能没有 timeline 字段，挂载时补一份空结构
 if (!props.data.timeline) props.data.timeline = createTimeline();
 
+// 旧片段用 linkId 表示"配对 + 锁定"，迁移成 pairId（身份）+ linked（是否联动）
+for (const track of props.data.timeline.tracks || []) {
+  for (const clip of track.clips || []) {
+    if (clip.linkId == null) continue;
+    if (!clip.pairId) clip.pairId = clip.linkId;
+    clip.linked = true;
+    delete clip.linkId;
+  }
+}
+
 const clipCount = computed(() =>
   (props.data.timeline?.tracks || []).reduce(
     (total, track) => total + (track.clips?.length || 0),
@@ -125,6 +137,9 @@ const targetConnected = computed(() => !!graph?.connectedTargets?.value?.has(pro
 
 // ---------------------------------------------------------------- 悬停 / 删除
 const hovered = ref(false);
+
+// 正拖着别的节点停在本节点上：高亮 + 提示可以松手添加素材
+const dropActive = computed(() => graph?.mediaDropTarget?.value === props.id);
 
 const deleteScale = computed(() =>
   Math.min(1.4, Math.max(0.5, 1 / (flow.viewport.value.zoom || 1)))
@@ -212,6 +227,31 @@ const culled = computed(() => {
 
 .vue-flow__node.selected .tl-node {
   border-color: var(--c-accent);
+}
+
+/* 拖动别的节点停在本节点上方：描边高亮 + 顶部提示 */
+.tl-node.is-drop-target {
+  border-color: var(--c-accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--c-accent) 35%, transparent),
+    0 6px 18px var(--c-shadow);
+}
+
+.tl-drop-tip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  transform: translate(-50%, -50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--c-accent);
+  color: #12140f;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 16px var(--c-shadow);
 }
 
 .tl-name {

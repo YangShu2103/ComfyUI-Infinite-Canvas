@@ -16,6 +16,7 @@
   >
     <CompareView
       v-if="comparing && upstream && item"
+      ref="compareRef"
       :kind="item.kind"
       :before="upstream"
       :after="item"
@@ -149,6 +150,7 @@ const props = defineProps({
 const emit = defineEmits(["select", "frame", "edit-state"]);
 
 const stageEl = ref(null);
+const compareRef = ref(null);
 const zoom = ref(1);
 const pan = ref({ x: 0, y: 0 });
 let drag = null;
@@ -857,6 +859,7 @@ async function exportFrame(kind) {
 function resetView() {
   zoom.value = 1;
   pan.value = { x: 0, y: 0 };
+  compareRef.value?.reset();
 }
 
 defineExpose({

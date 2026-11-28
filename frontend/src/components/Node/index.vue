@@ -3621,8 +3621,13 @@ async function run() {
   background: var(--c-accent-weak);
 }
 
+/* 音频控制条的高度由浏览器决定，卡片是块布局会贴顶，这里让它垂直居中 */
 .media-audio {
+  position: absolute;
+  top: 50%;
+  left: 0;
   width: 100%;
+  transform: translateY(-50%);
 }
 
 .media-audio-thumb {

@@ -27,6 +27,7 @@
         :zoom-on-double-click="false"
         :connection-radius="0"
         connection-mode="strict"
+        :delete-key-code="['Backspace', 'Delete']"
         only-render-visible-elements
       >
         <Background :pattern-color="canvasGridColor" :gap="20" />
@@ -80,6 +81,24 @@
     />
 
     <component v-for="dialog in dialogs" :is="dialog.component" :key="dialog.key" />
+
+    <!-- Shift 拖动节点时的素材影子：跟手一张缩略图 + 数量，落到目标节点上松手即添加 -->
+    <Teleport to="body">
+      <div
+        v-if="mediaDrag"
+        class="media-drag-ghost"
+        :style="{ left: `${mediaDrag.x}px`, top: `${mediaDrag.y}px` }"
+      >
+        <img v-if="mediaDrag.thumb" :src="mediaDrag.thumb" alt="" />
+        <span v-else class="media-drag-icon">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="M4.5 18l5-5 4 4 2.5-2.5 3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+          </svg>
+        </span>
+        <span class="media-drag-count">{{ mediaDrag.count }} 个素材</span>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -203,6 +222,8 @@ const {
   layoutRevision,
   setRunScope,
   restoreRunStates,
+  mediaDropTarget,
+  mediaDrag,
 } = useGraph();
 
 // 记录鼠标停在画布上的位置：Ctrl/Cmd + V 时把副本粘到这里；
@@ -638,6 +659,8 @@ provide("canvasGraph", {
   edges,
   appendMedia,
   appendItems,
+  mediaDropTarget,
+  mediaDrag,
   appendFilesToShot,
   spawnChildNode,
   spawnTimelineNode,
@@ -826,6 +849,48 @@ async function onDrop(event) {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* Shift 拖动节点时跟手的素材影子 */
+.media-drag-ghost {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 8px 4px 4px;
+  border: 1px solid var(--c-accent);
+  border-radius: 10px;
+  background: var(--c-panel-2);
+  color: var(--c-text);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(12px, 12px);
+  box-shadow: 0 8px 20px var(--c-shadow);
+}
+
+.media-drag-ghost img {
+  width: 48px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.media-drag-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--c-text) 8%, transparent);
+  color: var(--c-muted);
+}
+
+.media-drag-count {
+  color: var(--c-text);
 }
 
 .flow-wrap {

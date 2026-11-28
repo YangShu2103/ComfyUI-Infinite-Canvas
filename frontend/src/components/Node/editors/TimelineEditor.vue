@@ -84,6 +84,7 @@
           v-for="item in binItems"
           :key="item.id"
           class="tl-bin-item"
+          :class="{ 'is-input': !isOwnBin(item) }"
           :title="`${item.name}（拖到轨道，或双击加到播放头）`"
           @pointerdown="startBinDrag(item, $event)"
           @dblclick="addAtPlayhead(item)"
@@ -108,6 +109,27 @@
           <span v-else-if="metaOf(item)?.duration" class="tl-bin-dur">
             {{ formatTimecode(metaOf(item).duration, fps) }}
           </span>
+          <!-- 自身素材右上角可删；上游连进来的只读，左上角标一个小圆点 -->
+          <button
+            v-if="isOwnBin(item)"
+            class="tl-bin-delete"
+            type="button"
+            title="从暂存区删除"
+            @pointerdown.stop
+            @mousedown.stop
+            @click.stop="removeBinItem(item)"
+          >
+            <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
+              <path
+                d="M6 6l12 12M18 6L6 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <span v-else class="tl-bin-flag" title="上游素材" />
         </div>
         <button class="tl-bin-add" type="button" title="上传图片 / 视频 / 音频" @click="pickFiles">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -123,8 +145,37 @@
     <div class="tl-timeline nodrag">
       <div class="tl-labels">
         <div class="tl-label-spacer" />
-        <div v-for="track in tl.tracks" :key="track.id" class="tl-label" :class="`is-${track.kind}`">
-          {{ track.id.toUpperCase() }}
+        <div
+          v-for="track in tl.tracks"
+          :key="track.id"
+          class="tl-label"
+          :class="`is-${track.kind}`"
+          :style="{ height: `${trackHeight(track)}px` }"
+        >
+          <span class="tl-label-id">{{ track.id.toUpperCase() }}</span>
+          <!-- 视频轨：禁用后这条轨不参与预览与导出；音频轨：静音后不出声 -->
+          <button
+            class="tl-track-toggle"
+            :class="{ 'is-off': trackOff(track) }"
+            type="button"
+            :title="trackToggleTip(track)"
+            @pointerdown.stop
+            @click.stop="toggleTrack(track)"
+          >
+            <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+              <template v-if="track.kind === 'audio'">
+                <path d="M4 9.5v5h3l4 3.2V6.3L7 9.5H4Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                <path v-if="!track.muted" d="M15 9a4 4 0 0 1 0 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                <path v-else d="M15.5 9.5l4 5M19.5 9.5l-4 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </template>
+              <template v-else>
+                <path d="M3 7.5h10.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                <path d="M15.5 10.5l5-2.8v8.6l-5-2.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                <path v-if="track.disabled" d="M3 20L20 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+              </template>
+            </svg>
+          </button>
+          <span class="tl-track-resize" @pointerdown.stop.prevent="startTrackResize(track, $event)" />
         </div>
       </div>
       <div ref="scrollEl" class="tl-scroll" @wheel.prevent="onWheel">
@@ -147,6 +198,7 @@
               class="tl-track"
               :class="`is-${track.kind}`"
               :data-track-id="track.id"
+              :style="{ height: `${trackHeight(track)}px` }"
               @pointerdown.self="onTrackBlankDown(track, $event)"
             >
               <!-- 拖拽时的落点预览：告诉用户会放在哪条轨道、占多长 -->
@@ -167,6 +219,7 @@
                 :class="{
                   'is-selected': clip.id === selectedClipId,
                   'is-audio': track.kind === 'audio',
+                  'is-track-off': trackOff(track),
                 }"
                 :style="clipStyle(clip)"
                 @pointerdown.stop="startClipDrag(clip, track, 'move', $event)"
@@ -181,15 +234,17 @@
                 />
                 <span class="tl-clip-name">{{ clipName(clip) }}</span>
                 <button
-                  v-if="clip.linkId"
+                  v-if="clip.pairId"
                   class="tl-clip-link"
+                  :class="{ 'is-off': !clip.linked }"
                   type="button"
-                  title="取消链接：视频与音频分开移动"
+                  :title="clip.linked ? '解锁同步：视频与音频分开移动 / 删除' : '重新上锁：按当前相对位置一起移动'"
                   @pointerdown.stop
-                  @click.stop="unlink(clip)"
+                  @click.stop="toggleLink(clip)"
                 >
                   <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
-                    <path d="M9 15l6-6M8 7l1.5-1.5a4 4 0 0 1 5.7 5.7L14 12.5M10 11.5L8.5 13a4 4 0 0 0 5.7 5.7L16 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                    <path v-if="clip.linked" d="M9 15l6-6M8 7l1.5-1.5a4 4 0 0 1 5.7 5.7L14 12.5M10 11.5L8.5 13a4 4 0 0 0 5.7 5.7L16 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                    <path v-else d="M9 15l6-6M8 7l1.5-1.5a4 4 0 0 1 5.7 5.7L14 12.5M10 11.5L8.5 13a4 4 0 0 0 5.7 5.7L16 17M4 20L20 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
                   </svg>
                 </button>
                 <span class="tl-trim is-left" @pointerdown.stop="startClipDrag(clip, track, 'trim-l', $event)" />
@@ -361,6 +416,62 @@ const fps = computed(() => Math.max(1, Math.round(Number(tl.value.fps) || 30)));
 // 画布缩放系数：节点内部的像素要换算成屏幕像素，否则拖动和点击会按比例偏移
 const viewScale = computed(() => Number(graph?.viewport?.value?.zoom) || 1);
 
+// 轨道高度：默认 46px，拖下边缘只能往高里调，高度存在轨迹对象上跟着画布一起存盘
+const TRACK_MIN_H = 46;
+// 节点最小高度：和时间线节点自身的下限一致，轨道拉高时节点跟着长高
+const NODE_MIN_H = 380;
+
+function trackHeight(track) {
+  return Math.max(TRACK_MIN_H, Math.round(Number(track.h) || TRACK_MIN_H));
+}
+
+let trackResize = null;
+
+function startTrackResize(track, event) {
+  if (event.button !== 0) return;
+  graph?.captureUndo?.(true);
+  trackResize = { track, y: event.clientY, h: trackHeight(track), zoom: viewScale.value };
+  window.addEventListener("pointermove", onTrackResize);
+  window.addEventListener("pointerup", stopTrackResize);
+  window.addEventListener("blur", stopTrackResize);
+}
+
+// 轨道长高多少，节点就长高多少：时间线区域不会被压出纵向滚动条
+function onTrackResize(event) {
+  if (!trackResize) return;
+  const dy = (event.clientY - trackResize.y) / (trackResize.zoom || 1);
+  const next = Math.max(TRACK_MIN_H, Math.round(trackResize.h + dy));
+  const diff = next - trackHeight(trackResize.track);
+  if (!diff) return;
+  trackResize.track.h = next;
+  props.data.h = Math.max(NODE_MIN_H, (Number(props.data.h) || NODE_MIN_H) + diff);
+}
+
+function stopTrackResize() {
+  trackResize = null;
+  window.removeEventListener("pointermove", onTrackResize);
+  window.removeEventListener("pointerup", stopTrackResize);
+  window.removeEventListener("blur", stopTrackResize);
+}
+
+// 轨道开关：视频轨禁用 / 音频轨静音，两种状态都不进预览，也不进导出
+function trackOff(track) {
+  return track.kind === "audio" ? !!track.muted : !!track.disabled;
+}
+
+function trackToggleTip(track) {
+  if (track.kind === "audio") return track.muted ? "取消静音" : "静音这条音轨";
+  return track.disabled ? "启用这条视频轨" : "禁用这条视频轨（不参与预览和合成）";
+}
+
+function toggleTrack(track) {
+  graph?.captureUndo?.(true);
+  if (track.kind === "audio") track.muted = !track.muted;
+  else track.disabled = !track.disabled;
+  syncAll(playhead.value);
+  scheduleDraw();
+}
+
 // 浮动预览的尺寸：宽度跟随节点，但有上限；高度也有上限，竖屏素材不会糊满整屏
 const MAX_PREVIEW_WIDTH = 1080;
 const MAX_PREVIEW_HEIGHT = 720;
@@ -399,6 +510,31 @@ const binItems = computed(() => {
   }
   return list;
 });
+
+// 自身素材的 id：只有这些能删，上游连进来的只读
+const ownBinIds = computed(() => new Set((props.data.media || []).map((item) => item.id)));
+
+function isOwnBin(item) {
+  return ownBinIds.value.has(item.id);
+}
+
+// 从暂存区删掉自身素材；时间线上用到它的片段一起清掉，否则会留下没画面的空片段
+function removeBinItem(item) {
+  const media = props.data.media || [];
+  const at = media.findIndex((entry) => entry.id === item.id);
+  if (at < 0) return;
+  graph?.captureUndo?.(true);
+  closeBinPreview();
+  props.data.media = media.filter((_, i) => i !== at);
+  for (const track of tl.value.tracks) {
+    const rest = track.clips.filter((clip) => clip.mediaId !== item.id);
+    if (rest.length !== track.clips.length) track.clips = rest;
+  }
+  prunePairs();
+  if (selectedClipId.value && !allClips.value.some(({ clip }) => clip.id === selectedClipId.value)) {
+    selectedClipId.value = "";
+  }
+}
 
 const allClips = computed(() =>
   tl.value.tracks.flatMap((track) => track.clips.map((clip) => ({ clip, track })))
@@ -751,15 +887,40 @@ function trackOf(clip) {
   return tl.value.tracks.find((track) => track.clips.some((item) => item.id === clip.id)) || null;
 }
 
-function linkedGroup(clip) {
-  if (!clip?.linkId) return [clip];
+// 配对组：同一个 pairId 的片段（视频 + 自动分出的音频）。pairId 只是身份，linked 决定要不要联动
+function pairGroup(clip) {
+  if (!clip?.pairId) return [clip];
   const group = [];
   for (const track of tl.value.tracks) {
     for (const item of track.clips) {
-      if (item.linkId === clip.linkId) group.push(item);
+      if (item.pairId === clip.pairId) group.push(item);
     }
   }
   return group.length ? group : [clip];
+}
+
+function linkedGroup(clip) {
+  if (!clip?.pairId || !clip.linked) return [clip];
+  return pairGroup(clip);
+}
+
+// 配对残留清理：同 pairId 只剩一个片段时（另一半被删 / 被覆盖），把配对身份去掉，
+// 剩下那一半的锁按钮才真正消失
+function prunePairs() {
+  const counts = new Map();
+  for (const track of tl.value.tracks) {
+    for (const clip of track.clips) {
+      if (!clip.pairId) continue;
+      counts.set(clip.pairId, (counts.get(clip.pairId) || 0) + 1);
+    }
+  }
+  for (const track of tl.value.tracks) {
+    for (const clip of track.clips) {
+      if (!clip.pairId || counts.get(clip.pairId) >= 2) continue;
+      delete clip.pairId;
+      delete clip.linked;
+    }
+  }
 }
 
 function trackAccepts(track, kind) {
@@ -848,7 +1009,7 @@ function overwriteRange(trackIds, start, end, keepIds) {
       if (keepIds?.has(clip.id)) continue;
       const clipEnd = clip.start + clipLength(clip);
       if (clipEnd <= start + eps || clip.start >= end - eps) continue;
-      const key = clip.linkId || `solo:${clip.id}`;
+      const key = clip.linked && clip.pairId ? clip.pairId : `solo:${clip.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
       groups.push(linkedGroup(clip));
@@ -884,8 +1045,8 @@ function overwriteRange(trackIds, start, end, keepIds) {
       continue;
     }
 
-    // 中间被压住：左半保留，右半复制成新片段并共用新的 linkId
-    const newLink = head.linkId ? `l${Math.random().toString(36).slice(2, 8)}` : null;
+    // 中间被压住：左半保留，右半复制成新片段并共用新的 pairId（解锁状态就各自独立）
+    const newPair = head.linked && head.pairId ? `p${Math.random().toString(36).slice(2, 8)}` : null;
     const rights = [];
     for (const clip of group) {
       const track = trackOf(clip);
@@ -897,7 +1058,8 @@ function overwriteRange(trackIds, start, end, keepIds) {
           start: roundTime(end),
           in: roundTime(clip.in + (end - s)),
           out: clip.out,
-          linkId: newLink,
+          pairId: newPair,
+          linked: !!newPair,
         },
       });
       clip.out = roundTime(clip.in + (start - s));
@@ -906,6 +1068,7 @@ function overwriteRange(trackIds, start, end, keepIds) {
       if (track) track.clips.push(clip);
     }
   }
+  prunePairs();
 }
 
 // ---------------------------------------------------------------- 添加片段
@@ -931,13 +1094,14 @@ async function dropItem(item, trackId, time) {
   const start = snapTime(roundTime(time ?? playhead.value), null);
   const end = roundTime(start + length);
 
-  const makeClip = (linkId) => ({
+  const makeClip = (pairId) => ({
     id: newClipId(),
     mediaId: item.id,
     start,
     in: 0,
     out: roundTime(length),
-    linkId,
+    pairId,
+    linked: !!pairId,
   });
 
   // 视频落到音频轨：只取它的声音
@@ -965,16 +1129,18 @@ async function dropItem(item, trackId, time) {
       tl.value.tracks.find((entry) => entry.id === audioId) ||
       tl.value.tracks.find((entry) => entry.kind === "audio");
     if (audioTrack) {
-      const linkId = `l${Math.random().toString(36).slice(2, 8)}`;
+      const pairId = `p${Math.random().toString(36).slice(2, 8)}`;
       const audioClip = {
         id: newClipId(),
         mediaId: item.id,
         start,
         in: 0,
         out: roundTime(length),
-        linkId,
+        pairId,
+        linked: true,
       };
-      videoClip.linkId = linkId;
+      videoClip.pairId = pairId;
+      videoClip.linked = true;
       audioTrack.clips.push(audioClip);
       keepIds.add(audioClip.id);
       coverTracks.push(audioTrack.id);
@@ -1097,6 +1263,13 @@ function selectClip(clip) {
   editorEl.value?.focus?.({ preventScroll: true });
 }
 
+// 指针落在片段内的横向偏移（秒）：按片段元素的显示宽度折算，画布缩放也会算进去
+function clickOffset(clip, event) {
+  const rect = event.currentTarget?.getBoundingClientRect?.();
+  if (!rect || !rect.width) return 0;
+  return (event.clientX - rect.left) / (pps.value * viewScale.value);
+}
+
 function startClipDrag(clip, track, mode, event) {
   if (event.button !== 0) return;
   event.preventDefault();
@@ -1116,6 +1289,8 @@ function startClipDrag(clip, track, mode, event) {
     track,
     startX: event.clientX,
     startY: event.clientY,
+    // 单击（没拖动）时播放头落到点击位置：按片段左边缘 + 指针偏移换算
+    clickTime: clip.start + clickOffset(clip, event),
     origin,
     group,
     trackMap,
@@ -1154,13 +1329,18 @@ function onClipMove(event) {
     const start = atStart ? 0 : Math.max(0, snapTime(desired, drag.ids));
     drag.targetStart = start;
     drag.plan = point ? moveTrackPlan(point.track) : null;
-    // 落点预览沿用拖拽素材时的样式：目标轨（视频还会带上配对音频轨）
+    // 落点预览沿用拖拽素材时的样式：目标轨（视频还会带上配对音频轨）。
+    // 锁定后两半的相对位置可能已经被改过，影子要按各自的实际偏移画，不能都对齐到同一时间
     dropHints.value = drag.plan
-      ? [...new Set(drag.plan.values())].map((trackId) => ({
-          trackId,
-          start,
-          length: drag.length,
-        }))
+      ? [...drag.plan.entries()].map(([memberId, trackId]) => {
+          const base = drag.origin.get(memberId);
+          const move = start - origin.start;
+          return {
+            trackId,
+            start: Math.max(0, roundTime(base.start + move)),
+            length: Math.max(0, base.out - base.in),
+          };
+        })
       : [];
     return;
   }
@@ -1284,6 +1464,8 @@ function trackById(id) {
 function applyClipMove(state) {
   const base = state.origin.get(state.clip.id).start;
   const delta = state.targetStart - base;
+  // 覆盖范围按各自的落点算：锁定后两半的相对位置可能不是对齐的
+  const covers = [];
   for (const member of state.group) {
     const from = state.trackMap.get(member.id);
     const to = trackById(state.plan.get(member.id));
@@ -1294,13 +1476,19 @@ function applyClipMove(state) {
       from.clips = from.clips.filter((clip) => clip.id !== member.id);
       to.clips.push(member);
     }
+    covers.push({
+      trackId: to.id,
+      start: roundTime(origin.start + delta),
+      end: roundTime(origin.start + delta) + (origin.out - origin.in),
+    });
   }
-  const end = roundTime(state.targetStart + state.length);
   const keepIds = new Set(state.group.map((member) => member.id));
-  overwriteRange([...new Set(state.plan.values())], state.targetStart, end, keepIds);
+  for (const { trackId, start, end } of covers) {
+    overwriteRange([trackId], start, roundTime(end), keepIds);
+  }
 }
 
-// 单击片段：播放头到片段开头；400ms 内在同一片段上再点一次：到片段末尾
+// 单击片段：播放头到点击位置；200ms 内在同一片段上再点一次：到片段末尾
 let lastClick = { clipId: "", time: 0 };
 
 function endClipDrag() {
@@ -1312,9 +1500,9 @@ function endClipDrag() {
     if (state.moved && state.plan) applyClipMove(state);
     else if (!state.moved) {
       const now = performance.now();
-      const again = lastClick.clipId === state.clip.id && now - lastClick.time < 400;
+      const again = lastClick.clipId === state.clip.id && now - lastClick.time < 200;
       lastClick = { clipId: state.clip.id, time: again ? 0 : now };
-      setPlayheadTime(state.clip.start + (again ? state.length : 0));
+      setPlayheadTime(again ? state.clip.start + state.length : state.clickTime);
     }
   }
   dropHints.value = [];
@@ -1322,7 +1510,7 @@ function endClipDrag() {
   scheduleDraw();
 }
 
-// ---------------------------------------------------------------- 删除 / 分割 / 解锁
+// ---------------------------------------------------------------- 删除 / 分割 / 同步锁
 function removeSelected() {
   const clip = selectedClip.value;
   if (!clip) return;
@@ -1331,6 +1519,7 @@ function removeSelected() {
   for (const track of tl.value.tracks) {
     track.clips = track.clips.filter((member) => !ids.has(member.id));
   }
+  prunePairs();
   selectedClipId.value = "";
   syncAll(playhead.value);
   scheduleDraw();
@@ -1346,7 +1535,7 @@ function splitAtPlayhead() {
 
   graph?.captureUndo?.(true);
   const group = linkedGroup(clip);
-  const newLinkId = group.length > 1 ? `l${Math.random().toString(36).slice(2, 8)}` : null;
+  const newPairId = group.length > 1 ? `p${Math.random().toString(36).slice(2, 8)}` : null;
   for (const member of group) {
     const track = trackOf(member);
     if (!track) continue;
@@ -1356,21 +1545,25 @@ function splitAtPlayhead() {
       start: roundTime(time),
       in: roundTime(member.in + offset),
       out: member.out,
-      linkId: newLinkId,
+      pairId: newPairId,
+      linked: !!newPairId,
     };
     member.out = roundTime(member.in + offset);
     track.clips.push(right);
     settleOverlap(track, right);
   }
+  prunePairs();
   syncAll(playhead.value);
   scheduleDraw();
 }
 
-function unlink(clip) {
-  const group = linkedGroup(clip);
+// 同步锁：解锁后视频和音频各自移动 / 删除；再点一次按当前相对位置重新锁上
+function toggleLink(clip) {
+  const group = pairGroup(clip);
   if (group.length < 2) return;
   graph?.captureUndo?.(true);
-  for (const member of group) member.linkId = null;
+  const next = !clip.linked;
+  for (const member of group) member.linked = next;
 }
 
 // ---------------------------------------------------------------- 播放头
@@ -1438,7 +1631,7 @@ let widthObserver = null;
 
 function topVideoClipAt(time) {
   for (const track of tl.value.tracks) {
-    if (track.kind !== "video") continue;
+    if (track.kind !== "video" || track.disabled) continue;
     for (const clip of track.clips) {
       if (time >= clip.start && time < clip.start + clipLength(clip)) return clip;
     }
@@ -1555,7 +1748,7 @@ function correctRate(el, drift) {
 function syncVideo(time) {
   const active = new Map();
   for (const track of tl.value.tracks) {
-    if (track.kind !== "video") continue;
+    if (track.kind !== "video" || track.disabled) continue;
     for (const clip of track.clips) {
       if (time >= clip.start && time < clip.start + clipLength(clip)) {
         active.set(clip.mediaId, clip);
@@ -1610,7 +1803,7 @@ function syncAudio(time) {
   const live = new Set();
   const existing = new Set();
   for (const track of tl.value.tracks) {
-    if (track.kind !== "audio") continue;
+    if (track.kind !== "audio" || track.muted) continue;
     for (const clip of track.clips) {
       existing.add(clip.id);
       const end = clip.start + clipLength(clip);
@@ -1859,6 +2052,11 @@ function buildExportPayload() {
   const tracks = [];
   let missing = "";
   for (const track of tl.value.tracks) {
+    // 禁用 / 静音的轨道不进合成，缺素材也不该拦住导出
+    if (trackOff(track)) {
+      tracks.push({ kind: track.kind, clips: [] });
+      continue;
+    }
     const clips = [];
     for (const clip of track.clips) {
       const item = clipItem(clip);
@@ -2104,6 +2302,7 @@ onBeforeUnmount(() => {
   stopExportPoll();
   exitFullscreen();
   stopPlayback();
+  stopTrackResize();
   endClipDrag();
   cancelAnimationFrame(drawRaf);
   for (const el of videoEls.values()) {
@@ -2436,6 +2635,53 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+/* 自身素材右上角删除按钮：和普通节点的素材条一致，常驻的圆形小按钮 */
+.tl-bin-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 2;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(15, 15, 20, 0.78);
+  color: var(--c-text);
+  opacity: 0.85;
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.tl-bin-item:hover .tl-bin-delete {
+  opacity: 1;
+}
+
+.tl-bin-delete:hover {
+  background: rgba(255, 107, 107, 0.85);
+  color: #fff;
+}
+
+/* 上游素材：左上角亮色小圆点，类型标签往右让位 */
+.tl-bin-flag {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.tl-bin-item.is-input .tl-bin-kind {
+  left: 12px;
+}
+
 .tl-bin-add {
   display: flex;
   align-items: center;
@@ -2476,9 +2722,10 @@ onBeforeUnmount(() => {
 }
 
 .tl-labels {
-  flex: 0 0 34px;
+  flex: 0 0 56px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   border-right: 1px solid var(--c-line);
   background: var(--c-surface-2);
 }
@@ -2489,14 +2736,56 @@ onBeforeUnmount(() => {
 }
 
 .tl-label {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 3px;
+  padding: 0 2px;
   height: 46px;
   border-bottom: 1px solid var(--c-line);
   color: var(--c-muted);
   font-size: 9px;
   letter-spacing: 0.04em;
+}
+
+.tl-label-id {
+  font-size: 9px;
+}
+
+/* 轨道开关：视频轨禁用 / 音频轨静音 */
+.tl-track-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+
+.tl-track-toggle:hover {
+  background: color-mix(in srgb, var(--c-text) 12%, transparent);
+  color: var(--c-text);
+}
+
+.tl-track-toggle.is-off {
+  color: var(--c-danger);
+}
+
+.tl-track-toggle.is-off:hover {
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
+}
+
+/* 被禁用 / 静音的轨道上的片段压暗，一眼能看出不参与合成 */
+.tl-clip.is-track-off {
+  opacity: 0.42;
 }
 
 .tl-label.is-audio {
@@ -2564,6 +2853,21 @@ onBeforeUnmount(() => {
 
 .tl-track.is-audio {
   background: color-mix(in srgb, var(--c-text) 1.5%, transparent);
+}
+
+/* 轨道名下边缘的拖拽条：只有这一列能改轨道高度（只放大，高度落在 track.h 上） */
+.tl-track-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  z-index: 4;
+  height: 7px;
+  cursor: ns-resize;
+}
+
+.tl-track-resize:hover {
+  background: color-mix(in srgb, var(--c-accent) 30%, transparent);
 }
 
 .tl-clip {
@@ -2655,6 +2959,11 @@ onBeforeUnmount(() => {
 
 .tl-clip-link:hover {
   background: rgba(0, 0, 0, 0.75);
+}
+
+/* 已解锁：图标压暗，点一下按当前相对位置重新上锁 */
+.tl-clip-link.is-off {
+  opacity: 0.6;
 }
 
 .tl-trim {

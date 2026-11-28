@@ -668,9 +668,9 @@ export function useGraph() {
   }
 
   // ------------------------------------------------------------ 节点自适应尺寸
-  // 让「素材实际显示区域」（84% 宽度 × 内容区高度）严格等于图片宽高比：
+  // 让「素材实际显示区域」（84% 宽度 × 内容区高度）严格等于素材宽高比：
   // 以节点当前宽度为基准算高度，高度落在 [225, 900] 之间；
-  // 宽幅图算出来低于最小高度时，反过来补足宽度，保证不裁切也不留黑边
+  // 宽幅素材算出来低于最小高度时，反过来补足宽度，保证不裁切也不留黑边
   function measureImage(url) {
     return new Promise((resolve) => {
       const img = new Image();
@@ -680,27 +680,36 @@ export function useGraph() {
     });
   }
 
-  async function fitNodeToFirstImage(nodeId, items) {
-    const first = (items || []).find((item) => item && item.kind === "image" && (item.thumbUrl || item.url));
-    if (!first) return false;
-    let size = await measureImage(first.thumbUrl || first.url);
-    // 缩略图还没生成 / 生成失败时退回原图测比例
-    if (!size && first.thumbUrl && first.url) size = await measureImage(first.url);
-    if (!size || !size.w || !size.h) return false;
-    // 图片加载期间节点可能已被删除
-    const node = flow.findNode(nodeId);
-    if (!node) return false;
+  // 视频拿不到封面时，直接读视频元数据取比例
+  function measureVideo(url) {
+    return new Promise((resolve) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.muted = true;
+      video.onloadedmetadata = () =>
+        resolve(video.videoWidth && video.videoHeight ? { w: video.videoWidth, h: video.videoHeight } : null);
+      video.onerror = () => resolve(null);
+      video.src = url;
+    });
+  }
 
-    const ratio = size.h / size.w;
+  // 按比例把节点调整到素材宽高比；已经是这个比例就不动（容忍 2%）
+  function applyNodeRatio(nodeId, w, h) {
+    if (!w || !h) return false;
+    // 素材加载期间节点可能已被删除；时间线 / 预处理 / 文本节点有自己的布局，不能被素材比例改尺寸
+    const node = flow.findNode(nodeId);
+    if (!node || node.type !== "demo") return false;
+
+    const ratio = h / w;
     let width = Math.max(NODE_WIDTH, Number(node.data.w) || NODE_WIDTH);
-    // 卡片宽度只有内容区的 84%，按这个宽度算高度才能保证卡片区域正好是图片比例
+    // 卡片宽度只有内容区的 84%，按这个宽度算高度才能保证卡片区域正好是素材比例
     let height = Math.round(NODE_PADDING + (width - NODE_PADDING) * CARD_WIDTH_RATIO * ratio);
 
     if (height > MAX_NODE_H) {
-      // 超长竖图：高度封顶，宽度保持不缩
+      // 超长竖图 / 竖屏视频：高度封顶，宽度保持不缩
       height = MAX_NODE_H;
     } else if (height < NODE_HEIGHT) {
-      // 宽幅图：保持最小高度，反过来补足宽度
+      // 宽幅素材：保持最小高度，反过来补足宽度
       height = NODE_HEIGHT;
       width = Math.round((height - NODE_PADDING) / (CARD_WIDTH_RATIO * ratio) + NODE_PADDING);
     }
@@ -717,6 +726,22 @@ export function useGraph() {
     node.data.w = nextWidth;
     node.data.h = height;
     return true;
+  }
+
+  // 新建 / 首次拿到素材时按第一张（图片或视频）的比例撑开节点
+  async function fitNodeToFirstMedia(nodeId, items) {
+    const first = (items || []).find(
+      (item) => item && (item.kind === "image" || item.kind === "video") && (item.thumbUrl || item.url)
+    );
+    if (!first) return false;
+    // 缩略图（webp 封面）保留原比例，视频也优先用它量
+    let size = await measureImage(first.thumbUrl || first.url);
+    if (!size) {
+      // 封面还没生成 / 生成失败：图片退回原图，视频读元数据
+      size = first.kind === "video" ? await measureVideo(first.url || "") : await measureImage(first.url || "");
+    }
+    if (!size) return false;
+    return applyNodeRatio(nodeId, size.w, size.h);
   }
 
 
@@ -752,7 +777,7 @@ export function useGraph() {
       .find((node) => node.id === id)
       ?.data.media.forEach((item) => runUpload(item).catch(() => {}));
     // 拖入多张时以第一张的宽高比撑开节点，避免竖图显示不全
-    fitNodeToFirstImage(id, media);
+    fitNodeToFirstMedia(id, media);
     return id;
   }
 
@@ -788,7 +813,7 @@ export function useGraph() {
     if (wasEmpty) node.data.index = 0;
     node.data.media.slice(media.length).forEach((item) => runUpload(item).catch(() => {}));
     // 只有在节点本来是空的时候才按这批素材的第一次比例定尺寸
-    if (wasEmpty) fitNodeToFirstImage(nodeId, items);
+    if (wasEmpty) fitNodeToFirstMedia(nodeId, items);
     return true;
   }
 
@@ -809,7 +834,7 @@ export function useGraph() {
     node.data.media = [...media, ...items];
     if (wasEmpty) node.data.index = 0;
     // 空节点落首个产物时按它的比例定尺寸；已有素材时保持原有比例不变
-    if (wasEmpty) fitNodeToFirstImage(nodeId, items);
+    if (wasEmpty) fitNodeToFirstMedia(nodeId, items);
     return true;
   }
 
@@ -901,7 +926,7 @@ export function useGraph() {
     ];
 
     addEdge(sourceId, null, id, null);
-    if (items.length) fitNodeToFirstImage(id, items);
+    if (items.length) fitNodeToFirstMedia(id, items);
     return id;
   }
 
@@ -1585,6 +1610,10 @@ export function useGraph() {
   let clipboard = null;
   // 鼠标最后停在画布上的屏幕坐标，粘贴时再换算成画布坐标（期间画布可能被平移缩放）
   let pastePointer = null;
+  // Ctrl/Cmd + V 的 paste 事件是否已经处理过，避免和 keydown 的兜底逻辑重复粘贴
+  let pasteHandled = false;
+  // 兜底定时器：系统剪贴板为空时浏览器不会派发 paste 事件，等一会儿再粘内部节点
+  let pasteFallback = 0;
 
   function setPastePointer(x, y) {
     pastePointer = { x, y };
@@ -1668,6 +1697,27 @@ export function useGraph() {
 
   function copySelection() {
     return copyNodes(flow.getSelectedNodes?.value || []);
+  }
+
+  // 复制节点时顺手把标记写进系统剪贴板：
+  // 粘贴时靠它判断「最近一次复制是在画布内」，否则系统里残留的旧图片会抢占粘贴
+  const NODE_CLIP_MARK = "infinite-canvas:copied-nodes";
+
+  function writeClipboardMark() {
+    try {
+      const el = document.createElement("textarea");
+      el.value = NODE_CLIP_MARK;
+      el.setAttribute("readonly", "");
+      el.style.cssText = "position:fixed;top:-1000px;left:-1000px;opacity:0;";
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      el.setSelectionRange?.(0, el.value.length);
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    } catch {
+      // 写不进剪贴板就退回原来的判断逻辑
+    }
   }
 
   function pasteClipboard(options = {}) {
@@ -1878,13 +1928,64 @@ export function useGraph() {
       return;
     }
     if (key === "c") {
-      if (copySelection()) event.preventDefault();
+      if (copySelection()) {
+        writeClipboardMark();
+        event.preventDefault();
+      }
+      return;
+    }
+    // Ctrl/Cmd + V 交给 paste 事件处理：需要先看系统剪贴板里有没有图片。
+    // 这里不能 preventDefault，否则原生 paste 事件不会触发；
+    // paste 事件是浏览器异步派发的，等它先处理，没来（剪贴板为空）才兜底粘贴节点
+    pasteHandled = false;
+    clearTimeout(pasteFallback);
+    pasteFallback = setTimeout(() => {
+      pasteFallback = 0;
+      if (!pasteHandled) pasteClipboard();
+    }, 500);
+  }
+
+  window.addEventListener("keydown", onCopyPasteKey);
+
+  // 系统剪贴板里的图片（截图、从其它软件复制的图）：Ctrl/Cmd + V 直接在鼠标位置建节点。
+  // 剪贴板里没有图片时，仍然粘贴画布里复制的节点
+  function clipboardImageFiles(data) {
+    const files = [];
+    for (const item of Array.from(data?.items || [])) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile?.();
+      if (file && String(file.type || "").startsWith("image/")) files.push(file);
+    }
+    return files;
+  }
+
+  async function onSystemPaste(event) {
+    if (isTypingTarget(event.target)) return;
+    const data = event.clipboardData;
+    if (!data) return;
+    // paste 事件到了：取消 keydown 的兜底粘贴，保证一次 Ctrl+V 只粘一次
+    pasteHandled = true;
+    clearTimeout(pasteFallback);
+    pasteFallback = 0;
+    const images = clipboardImageFiles(data);
+    // 最近一次复制发生在画布内（剪贴板里是我们的标记）时，优先粘节点
+    const fromCanvasCopy =
+      String(data.getData?.("text/plain") || "").trim() === NODE_CLIP_MARK;
+    if (images.length && !fromCanvasCopy) {
+      event.preventDefault();
+      event.stopPropagation();
+      // 鼠标不在画布上时贴到视口中心
+      const point = pastePointer || {
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      };
+      await importMedia(point.x, point.y, images);
       return;
     }
     if (pasteClipboard()) event.preventDefault();
   }
 
-  window.addEventListener("keydown", onCopyPasteKey);
+  window.addEventListener("paste", onSystemPaste, true);
 
   // Shift + G：把框选的节点打包成一个素材节点
   function onPackKey(event) {
@@ -1907,6 +2008,183 @@ export function useGraph() {
     captureUndo(true);
   }
   window.addEventListener("keydown", onDeleteKey);
+
+  // 按住 Shift 拖动节点：节点本体不动，跟手的是一个"素材影子"；
+  // 影子落到时间轴 / 预处理节点上时高亮对方，松手把素材加进去。
+  // 普通拖动照旧移动节点位置，不会误加素材
+  const mediaDropTarget = ref("");
+  const mediaDrag = ref(null);
+  const MEDIA_DROP_TYPES = new Set(["timeline", "preprocess"]);
+  let mediaDragSession = null;
+
+  function mediaItemsOf(node) {
+    const data = node?.data || {};
+    const items = [];
+    const push = (list) => {
+      for (const item of list || []) {
+        // 还没上传完的素材没有 ref，拷过去也用不了
+        if (!item?.ref?.filename) continue;
+        items.push(JSON.parse(JSON.stringify(item)));
+      }
+    };
+    push(data.media);
+    push(data.pool);
+    for (const shot of data.shots || []) push(shot.media);
+    return items;
+  }
+
+  // 指针落在哪个时间轴 / 预处理节点上
+  function mediaDropNodeAt(clientX, clientY) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return "";
+    for (const el of document.querySelectorAll(".vue-flow__node")) {
+      const type = /vue-flow__node-(\w+)/.exec(el.className || "")?.[1] || "";
+      if (!MEDIA_DROP_TYPES.has(type)) continue;
+      const id = el.getAttribute("data-id") || "";
+      if (!id) continue;
+      const rect = el.getBoundingClientRect();
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      ) {
+        return id;
+      }
+    }
+    return "";
+  }
+
+  // 按坐标反查节点：多选后 Vue Flow 会在选中区域上盖一层 .vue-flow__nodesselection，
+  // 指针落在它上面时拿不到节点元素，只能按节点矩形命中
+  function nodeIdAtPoint(clientX, clientY) {
+    let hit = "";
+    for (const el of document.querySelectorAll(".vue-flow__node")) {
+      const id = el.getAttribute("data-id") || "";
+      if (!id) continue;
+      const rect = el.getBoundingClientRect();
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      ) {
+        hit = id;
+      }
+    }
+    return hit;
+  }
+
+  function onMediaDragMove(event) {
+    const session = mediaDragSession;
+    if (!session) return;
+    if (!session.moved) {
+      if (Math.hypot(event.clientX - session.x, event.clientY - session.y) < 4) return;
+      session.moved = true;
+      mediaDrag.value = { x: event.clientX, y: event.clientY, ...session.ghost };
+    }
+    mediaDrag.value.x = event.clientX;
+    mediaDrag.value.y = event.clientY;
+    const id = mediaDropNodeAt(event.clientX, event.clientY);
+    if (mediaDropTarget.value !== id) mediaDropTarget.value = id;
+  }
+
+  function onMediaDragEnd() {
+    const session = mediaDragSession;
+    mediaDragSession = null;
+    window.removeEventListener("pointermove", onMediaDragMove, true);
+    window.removeEventListener("pointerup", onMediaDragEnd, true);
+    const dropId = mediaDropTarget.value;
+    mediaDropTarget.value = "";
+    mediaDrag.value = null;
+    if (!session?.moved || !dropId) return;
+    const targetNode = nodes.value.find((node) => node.id === dropId);
+    if (!targetNode) return;
+    const existing = new Set(
+      [...(targetNode.data.media || []), ...(targetNode.data.pool || [])].map((item) => item.id)
+    );
+    const items = session.items.filter((item) => {
+      if (existing.has(item.id)) return false;
+      existing.add(item.id);
+      return true;
+    });
+    if (!items.length) return;
+    captureUndo(true);
+    appendItems(dropId, items);
+  }
+
+  // Shift 按下期间禁止拖动节点：否则节点会跟着鼠标跑，和素材影子抢画面
+  function setNodesDraggable(on) {
+    if (!flow.nodesDraggable) return;
+    if (flow.nodesDraggable.value !== on) flow.nodesDraggable.value = on;
+  }
+
+  function onShiftKeyDown(event) {
+    if (event.key === "Shift") setNodesDraggable(false);
+  }
+
+  function onShiftKeyUp(event) {
+    if (event.key === "Shift") setNodesDraggable(true);
+  }
+
+  function onShiftBlur() {
+    setNodesDraggable(true);
+  }
+
+  window.addEventListener("keydown", onShiftKeyDown, true);
+  window.addEventListener("keyup", onShiftKeyUp, true);
+  window.addEventListener("blur", onShiftBlur);
+
+  // 在节点上按下 Shift 开始拖：只有超过 4px 才算拖动，纯粹 Shift 点选不受影响
+  function onMediaDragPointerDown(event) {
+    if (!event.shiftKey || event.button !== 0 || mediaDragSession) return;
+    if (isTypingTarget(event.target)) return;
+    const el = event.target instanceof Element ? event.target.closest(".vue-flow__node") : null;
+    // 多选后盖在选区上的 .vue-flow__nodesselection 会接走 pointerdown，这里按坐标兜底
+    if (!el && !(event.target instanceof Element && event.target.closest(".vue-flow"))) return;
+    // 节点里的按钮、输入框、时间轴/暂存区内部拖拽保持原有行为
+    if (
+      event.target.closest?.(
+        "button, input, textarea, select, .nodrag, .vue-flow__handle, .tl-bin, .pp-pool"
+      )
+    ) {
+      return;
+    }
+    const id = el?.getAttribute("data-id") || nodeIdAtPoint(event.clientX, event.clientY);
+    const clicked = nodes.value.find((node) => node.id === id);
+    if (!clicked) return;
+    const selected = flow.getSelectedNodes.value || [];
+    const group =
+      selected.length > 1 && selected.some((node) => node.id === id)
+        ? selected
+            .map((node) => nodes.value.find((item) => item.id === node.id))
+            .filter(Boolean)
+        : [clicked];
+    const items = [];
+    const seen = new Set();
+    for (const node of group) {
+      for (const item of mediaItemsOf(node)) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        items.push(item);
+      }
+    }
+    if (!items.length) return;
+    const first = items[0];
+    mediaDragSession = {
+      x: event.clientX,
+      y: event.clientY,
+      items,
+      moved: false,
+      ghost: {
+        count: items.length,
+        thumb: first.thumbUrl || first.url || "",
+      },
+    };
+    window.addEventListener("pointermove", onMediaDragMove, true);
+    window.addEventListener("pointerup", onMediaDragEnd, true);
+  }
+
+  window.addEventListener("pointerdown", onMediaDragPointerDown, true);
 
   // 拖动开始前存一份位置，拖动结束写回坐标，撤销才能退回原位
   const offNodeDragStart = flow.onNodeDragStart(() => captureUndo(true));
@@ -2164,6 +2442,27 @@ export function useGraph() {
     if (!state) return;
     if (state.preview?.url) URL.revokeObjectURL(state.preview.url);
     delete state.preview;
+    delete state.previewSize;
+  }
+
+  // 实时预览也按画面比例调节点尺寸，出图时节点不会再突然跳一下；
+  // 事件里带宽高就直接用，没带就量一帧并缓存到本次任务上，避免每帧都量
+  function fitNodeToPreview(canvasId, state) {
+    const frame = state?.preview;
+    if (!frame) return;
+    const known = frame.w && frame.h ? { w: frame.w, h: frame.h } : state.previewSize;
+    if (known) {
+      applyNodeRatio(canvasId, known.w, known.h);
+      return;
+    }
+    const measure = frame.mime === "video/mp4" ? measureVideo(frame.url) : measureImage(frame.url);
+    measure
+      .then((size) => {
+        if (!size) return;
+        state.previewSize = size;
+        applyNodeRatio(canvasId, size.w, size.h);
+      })
+      .catch(() => {});
   }
 
   function onPreviewFrame(data) {
@@ -2194,6 +2493,7 @@ export function useGraph() {
     };
     // 等 DOM 换到新地址再释放旧帧，避免 img/video 在替换瞬间裂图
     if (previous?.url) setTimeout(() => URL.revokeObjectURL(previous.url), 1000);
+    fitNodeToPreview(canvasId, state);
   }
 
   async function hydratePreviewNodes(nodeId, promptId, workflow) {
@@ -2363,7 +2663,7 @@ export function useGraph() {
       if (target?.data?.fromPreprocess) {
         target.data.media = items;
         target.data.index = 0;
-        fitNodeToFirstImage(nodeId, items);
+        fitNodeToFirstMedia(nodeId, items);
       } else {
         appendItems(nodeId, items);
       }
@@ -2646,6 +2946,7 @@ export function useGraph() {
         },
       },
     ];
+    if (items.length) fitNodeToFirstMedia(id, items);
     return id;
   }
 
@@ -2680,7 +2981,7 @@ export function useGraph() {
         },
       },
     ]);
-    fitNodeToFirstImage(id, [item]);
+    fitNodeToFirstMedia(id, [item]);
     return id;
   }
 
@@ -2711,7 +3012,7 @@ export function useGraph() {
       },
     ]);
     // 资产拖进画布：按第一张素材的比例撑开节点
-    fitNodeToFirstImage(id, items);
+    fitNodeToFirstMedia(id, items);
     return id;
   }
 
@@ -3272,6 +3573,8 @@ export function useGraph() {
     importMedia,
     appendMedia,
     appendItems,
+    mediaDropTarget,
+    mediaDrag,
     appendFilesToShot,
     spawnChildNode,
     spawnPreprocessNode,

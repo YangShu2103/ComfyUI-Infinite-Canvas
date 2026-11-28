@@ -3,14 +3,15 @@
     v-if="kind === 'image'"
     ref="stageEl"
     class="cmp-image"
-    :class="{ 'is-overlay': mode === 'overlay' }"
+    :class="{ 'is-overlay': mode === 'overlay', 'is-zoomed': zoom > 1 }"
     @pointerdown="startDrag"
+    @wheel.prevent="onWheel"
   >
     <div class="cmp-layer">
-      <img :src="before.url" :alt="before.name" draggable="false" />
+      <img :src="before.url" :alt="before.name" draggable="false" :style="zoomStyle" />
     </div>
     <div class="cmp-layer" :style="afterStyle">
-      <img :src="after.url" :alt="after.name" draggable="false" />
+      <img :src="after.url" :alt="after.name" draggable="false" :style="zoomStyle" />
     </div>
     <span class="cmp-tag is-left">上游</span>
     <span class="cmp-tag is-right">当前</span>
@@ -118,7 +119,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
   kind: { type: String, default: "image" },
@@ -135,18 +136,79 @@ const mode = ref("split");
 const opacity = ref(60);
 let dragging = false;
 
+// 缩放 / 平移：两张图用同一套变换，分割线仍在预览区坐标系里
+const zoom = ref(1);
+const pan = ref({ x: 0, y: 0 });
+let panDrag = null;
+
+const zoomStyle = computed(() => ({
+  transform: `translate(${pan.value.x}px, ${pan.value.y}px) scale(${zoom.value})`,
+}));
+
 const afterStyle = computed(() =>
   mode.value === "overlay"
     ? { opacity: `${opacity.value}%` }
     : { clipPath: `inset(0 0 0 ${pos.value}%)` }
 );
 
+// 切换对比的素材时回到 100%
+watch(
+  () => [props.before?.url, props.after?.url],
+  () => {
+    zoom.value = 1;
+    pan.value = { x: 0, y: 0 };
+  }
+);
+
+function onWheel(event) {
+  if (props.kind !== "image" || !stageEl.value) return;
+  const rect = stageEl.value.getBoundingClientRect();
+  const cx = event.clientX - rect.left - rect.width / 2;
+  const cy = event.clientY - rect.top - rect.height / 2;
+  const factor = Math.exp(-event.deltaY / 600);
+  const next = Math.min(8, Math.max(0.5, zoom.value * factor));
+  const scale = next / zoom.value;
+  pan.value = {
+    x: cx - (cx - pan.value.x) * scale,
+    y: cy - (cy - pan.value.y) * scale,
+  };
+  zoom.value = next;
+  if (next <= 1) pan.value = { x: 0, y: 0 };
+}
+
+function beginPan(event) {
+  panDrag = { x: event.clientX, y: event.clientY, pan: { ...pan.value } };
+  window.addEventListener("pointermove", onPanMove);
+  window.addEventListener("pointerup", endPan);
+}
+
+function onPanMove(event) {
+  if (!panDrag) return;
+  pan.value = {
+    x: panDrag.pan.x + (event.clientX - panDrag.x),
+    y: panDrag.pan.y + (event.clientY - panDrag.y),
+  };
+}
+
+function endPan() {
+  panDrag = null;
+  window.removeEventListener("pointermove", onPanMove);
+  window.removeEventListener("pointerup", endPan);
+}
+
+// 放大后拖动预览区是平移，分割线改用中间的圆形把手拖动
 function startDrag(event) {
-  if (props.kind !== "image" || mode.value !== "split" || !stageEl.value) return;
-  dragging = true;
-  updatePos(event);
-  window.addEventListener("pointermove", updatePos);
-  window.addEventListener("pointerup", endDrag);
+  if (props.kind !== "image" || !stageEl.value) return;
+  const target = event.target;
+  const onHandle = !!(target && target.closest && target.closest(".cmp-handle"));
+  if (mode.value === "split" && (zoom.value <= 1 || onHandle)) {
+    dragging = true;
+    updatePos(event);
+    window.addEventListener("pointermove", updatePos);
+    window.addEventListener("pointerup", endDrag);
+    return;
+  }
+  if (zoom.value > 1) beginPan(event);
 }
 
 function updatePos(event) {
@@ -163,8 +225,17 @@ function endDrag() {
   window.removeEventListener("pointerup", endDrag);
 }
 
+// 回到 100%（与普通预览的 resetView 一致）
+function reset() {
+  zoom.value = 1;
+  pan.value = { x: 0, y: 0 };
+}
+
+defineExpose({ reset });
+
 onBeforeUnmount(() => {
   endDrag();
+  endPan();
   pauseAll();
 });
 
@@ -291,6 +362,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   cursor: default;
 }
 
+.cmp-image.is-zoomed {
+  cursor: grab;
+}
+
 .cmp-layer {
   position: absolute;
   inset: 0;
@@ -303,6 +378,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  transform-origin: center center;
+  will-change: transform;
   pointer-events: none;
   user-select: none;
 }
@@ -351,6 +428,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown, true));
   background: color-mix(in srgb, var(--c-surface) 82%, transparent);
   color: var(--c-accent);
   transform: translate(-50%, -50%);
+  /* 放大后只能拖把手调整分割线，其余区域留给平移 */
+  pointer-events: auto;
+  cursor: ew-resize;
 }
 
 /* ---------------- 视频对比 ---------------- */
